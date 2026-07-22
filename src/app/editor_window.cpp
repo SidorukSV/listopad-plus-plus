@@ -168,9 +168,20 @@ bool EditorWindow::create(const int show_command) {
 
   WNDCLASSEXW type{sizeof(type)};
   type.hInstance = instance_; type.lpfnWndProc = window_proc; type.lpszClassName = kWindowClass;
-  type.hCursor = LoadCursorW(nullptr, IDC_ARROW); type.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_LISTOPAD));
+  type.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+  // LoadIconW only ever yields SM_CXICON, so reusing it as the small icon makes
+  // the shell downscale 32x32 to 16x16 instead of picking the dedicated frames
+  // the multi-size .ico already carries.
+  const auto load_icon = [this](const int metric) {
+    return static_cast<HICON>(LoadImageW(instance_, MAKEINTRESOURCEW(IDI_LISTOPAD), IMAGE_ICON,
+                                         GetSystemMetrics(metric == SM_CXICON ? SM_CXICON : SM_CXSMICON),
+                                         GetSystemMetrics(metric == SM_CXICON ? SM_CYICON : SM_CYSMICON),
+                                         LR_DEFAULTCOLOR));
+  };
+  type.hIcon = load_icon(SM_CXICON);
+  type.hIconSm = load_icon(SM_CXSMICON);
   if (!type.hIcon) type.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-  type.hIconSm = type.hIcon;
+  if (!type.hIconSm) type.hIconSm = type.hIcon;
   type.hbrBackground = nullptr;
   if (!RegisterClassExW(&type) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
   window_ = CreateWindowExW(0, kWindowClass, LISTOPAD_PRODUCT_NAME,

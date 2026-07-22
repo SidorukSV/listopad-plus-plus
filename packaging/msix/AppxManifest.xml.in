@@ -13,7 +13,7 @@
   <Properties>
     <DisplayName>Listopad++</DisplayName>
     <PublisherDisplayName>Listopad++ Contributors</PublisherDisplayName>
-    <Logo>Assets\ListopadPP.png</Logo>
+    <Logo>Assets\ListopadPP-StoreLogo.png</Logo>
     <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
   </Properties>
   <Resources>
@@ -25,13 +25,18 @@
                         MaxVersionTested="10.0.26100.0" />
   </Dependencies>
   <Applications>
+    <!-- Executable must name a binary that actually lives in the package's
+         external content directory. Pointing it at a stub while the editor sits
+         in the same directory makes Windows refuse to launch the editor at all
+         (CreateProcess fails with ERROR_FILE_NOT_FOUND), because the package
+         claims the whole directory and only runs what it declares. -->
     <Application Id="ListopadPP" Executable="ListopadPP.exe"
                  uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
       <uap:VisualElements AppListEntry="none" DisplayName="Listopad++"
                           Description="Fast offline text editor"
                           BackgroundColor="transparent"
-                          Square150x150Logo="Assets\ListopadPP.png"
-                          Square44x44Logo="Assets\ListopadPP.png" />
+                          Square150x150Logo="Assets\ListopadPP-Square150x150Logo.png"
+                          Square44x44Logo="Assets\ListopadPP-Square44x44Logo.png" />
       <Extensions>
         <com:Extension Category="windows.comServer">
           <com:ComServer>

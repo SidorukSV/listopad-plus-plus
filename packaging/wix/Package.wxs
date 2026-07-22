@@ -28,7 +28,54 @@
     </Component>
 
     <Component Id="VisualAssets" Directory="ASSETSDIR" Bitness="always64">
-      <File Id="ListopadLogo" Source="$(var.StageDir)\Assets\ListopadPP.png" KeyPath="yes" />
+      <File Id="StoreLogo" Source="$(var.StageDir)\Assets\ListopadPP-StoreLogo.png" KeyPath="yes" />
+      <File Id="Square150Logo" Source="$(var.StageDir)\Assets\ListopadPP-Square150x150Logo.png" />
+      <File Id="Square44Logo" Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-16.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-16_altform-unplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-16_altform-lightunplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-20.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-20_altform-unplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-20_altform-lightunplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-24.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-24_altform-unplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-24_altform-lightunplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-30.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-30_altform-unplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-30_altform-lightunplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-32.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-32_altform-unplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-32_altform-lightunplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-36.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-36_altform-unplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-36_altform-lightunplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-40.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-40_altform-unplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-40_altform-lightunplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-44.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-44_altform-unplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-44_altform-lightunplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-48.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-48_altform-unplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-48_altform-lightunplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-60.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-60_altform-unplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-60_altform-lightunplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-64.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-64_altform-unplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-64_altform-lightunplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-72.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-72_altform-unplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-72_altform-lightunplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-80.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-80_altform-unplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-80_altform-lightunplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-96.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-96_altform-unplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-96_altform-lightunplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-256.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-256_altform-unplated.png" />
+      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-256_altform-lightunplated.png" />
     </Component>
 
     <Component Id="DependencyLicenses" Directory="LICENSESDIR" Bitness="always64">
