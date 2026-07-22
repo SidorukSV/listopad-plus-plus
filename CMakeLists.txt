@@ -91,6 +91,12 @@ target_compile_options(ListopadElevated PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(ListopadElevated PRIVATE listopad_core advapi32 bcrypt shell32 wintrust)
 target_link_options(ListopadElevated PRIVATE "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
 
+add_executable(ListopadShellHost WIN32
+  src/shellhost/main.cpp
+  "${CMAKE_CURRENT_BINARY_DIR}/ListopadIcon.rc")
+target_compile_definitions(ListopadShellHost PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(ListopadShellHost PRIVATE /W4 /permissive- /utf-8 /EHsc)
+
 add_library(ListopadShell SHARED
   src/shell/shell_extension.cpp
   src/shell/shell.def
@@ -100,7 +106,7 @@ target_compile_definitions(ListopadShell PRIVATE UNICODE _UNICODE NOMINMAX WIN32
 target_compile_options(ListopadShell PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(ListopadShell PRIVATE listopad_core ole32 shell32 shlwapi)
 
-install(TARGETS ListopadPP ListopadElevated ListopadShell
+install(TARGETS ListopadPP ListopadElevated ListopadShell ListopadShellHost
   RUNTIME DESTINATION . LIBRARY DESTINATION .)
 install(FILES portable.flag DESTINATION . OPTIONAL)
 
@@ -116,7 +122,8 @@ if(LISTOPAD_BUILD_TESTS)
     tests/ipc_tests.cpp
     tests/language_tests.cpp
     tests/lexer_tests.cpp
-    tests/search_tests.cpp)
+    tests/search_tests.cpp
+    tests/shell_registration_tests.cpp)
   target_compile_definitions(listopad_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
   target_compile_options(listopad_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
   target_link_libraries(listopad_tests PRIVATE listopad_core listopad_lexilla Catch2::Catch2WithMain)

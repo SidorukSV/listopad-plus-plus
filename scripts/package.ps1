@@ -113,23 +113,23 @@ if ($LASTEXITCODE) { throw 'Sparse identity package creation failed.' }
 if ($PfxPath -or $SignCommand) { Invoke-Signer $msix }
 Copy-Item $msix (Join-Path $stage 'ListopadPP.Identity.msix') -Force
 
-# External content location for the sparse package. Windows treats every file in
-# this directory as package payload and will not launch anything the manifest
-# does not declare, so the editor must stay out of it. Only the context-menu
-# server and the declared host binary belong here.
+# External content location for the sparse package. Keeping it to just the
+# context-menu server and the declared host is hygiene, not a hard requirement:
+# a package does not block undeclared binaries placed beside it (verified). The
+# editor is excluded because nothing in the package needs it, and a narrow
+# external location makes the boundary obvious.
 $shellExt = Join-Path $out 'shellext'
 Reset-ChildDirectory $shellExt
 Copy-Item (Join-Path $stage 'ListopadShell.dll') $shellExt -Force
-# The host is never executed; it only satisfies the manifest's Executable
-# attribute. Reusing the already-signed broker avoids a second build target.
-Copy-Item (Join-Path $stage 'ListopadElevated.exe') (Join-Path $shellExt 'ListopadShellHost.exe') -Force
+# Never executed; it only satisfies the manifest's Executable attribute.
+Copy-Item (Join-Path $stage 'ListopadShellHost.exe') $shellExt -Force
 foreach ($required in 'ListopadShell.dll', 'ListopadShellHost.exe') {
   if (-not (Test-Path (Join-Path $shellExt $required))) {
     throw "External content directory is missing $required"
   }
 }
 if (Test-Path (Join-Path $shellExt 'ListopadPP.exe')) {
-  throw 'The editor must not live in the package external content directory.'
+  throw 'The editor does not belong in the package external content directory.'
 }
 
 $licenseDirectory = Join-Path $stage 'licenses'

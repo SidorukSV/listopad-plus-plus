@@ -1,3 +1,4 @@
+#include "listopad/shell_registration.h"
 #include "listopad/strings.h"
 
 #include <windows.h>
@@ -26,27 +27,13 @@ std::filesystem::path module_directory() {
   path.resize(length); return std::filesystem::path(path).parent_path();
 }
 
-// A sparse identity package claims its whole external content directory and
-// refuses to launch anything it does not declare, so the editor cannot sit
-// beside this DLL when the package provides the modern context menu. The editor
-// records its own location on startup; fall back to the historical layout so
-// portable and classic installs keep working before it has ever run.
-std::optional<std::filesystem::path> recorded_editor_path() {
-  DWORD size = 0;
-  if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\ListopadPP", L"ExecutablePath",
-                   RRF_RT_REG_SZ, nullptr, nullptr, &size) != ERROR_SUCCESS || !size) return std::nullopt;
-  std::wstring buffer(size / sizeof(wchar_t), L'\0');
-  if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\ListopadPP", L"ExecutablePath",
-                   RRF_RT_REG_SZ, nullptr, buffer.data(), &size) != ERROR_SUCCESS) return std::nullopt;
-  buffer.resize(wcslen(buffer.c_str()));
-  std::error_code error;
-  std::filesystem::path path(buffer);
-  if (buffer.empty() || !std::filesystem::exists(path, error)) return std::nullopt;
-  return path;
-}
-
+// The packaged layout keeps this DLL in the package's external content
+// directory while the editor ships elsewhere, so it publishes its own location
+// on startup. Fall back to the historical layout for portable, classic and MSI
+// installs, where the two share a directory and the value may never have been
+// written.
 std::filesystem::path editor_path() {
-  if (const auto recorded = recorded_editor_path()) return *recorded;
+  if (const auto recorded = listopad::recorded_executable_location()) return *recorded;
   return module_directory() / L"ListopadPP.exe";
 }
 

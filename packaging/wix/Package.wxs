@@ -14,80 +14,47 @@
       </Directory>
     </StandardDirectory>
 
-    <Component Id="ApplicationFiles" Directory="INSTALLFOLDER" Bitness="always64">
-      <File Id="ListopadPPExe" Source="$(var.StageDir)\ListopadPP.exe" KeyPath="yes" />
-      <File Id="ListopadElevatedExe" Source="$(var.StageDir)\ListopadElevated.exe" />
-      <File Id="ListopadShellDll" Source="$(var.StageDir)\ListopadShell.dll" />
-      <File Id="ReadmeFile" Source="$(var.StageDir)\README.md" />
-      <File Id="LicenseFile" Source="$(var.StageDir)\LICENSE" />
-      <File Id="NoticesFile" Source="$(var.StageDir)\THIRD_PARTY_NOTICES.md" />
-    </Component>
+    <!-- One file per component. An automatically generated GUID is only legal
+         when a component holds a single file, or a versioned keypath alongside
+         unversioned companions; grouping several binaries broke the build. -->
+    <ComponentGroup Id="ApplicationFiles" Directory="INSTALLFOLDER">
+      <Component Bitness="always64">
+        <File Id="ListopadPPExe" Source="$(var.StageDir)\ListopadPP.exe" KeyPath="yes" />
+      </Component>
+      <Component Bitness="always64">
+        <File Id="ListopadElevatedExe" Source="$(var.StageDir)\ListopadElevated.exe" KeyPath="yes" />
+      </Component>
+      <Component Bitness="always64">
+        <File Id="ListopadShellDll" Source="$(var.StageDir)\ListopadShell.dll" KeyPath="yes" />
+      </Component>
+      <Component Bitness="always64">
+        <File Id="ListopadShellHostExe" Source="$(var.StageDir)\ListopadShellHost.exe" KeyPath="yes" />
+      </Component>
+      <Component Bitness="always64">
+        <File Id="ReadmeFile" Source="$(var.StageDir)\README.md" KeyPath="yes" />
+      </Component>
+      <Component Bitness="always64">
+        <File Id="LicenseFile" Source="$(var.StageDir)\LICENSE" KeyPath="yes" />
+      </Component>
+      <Component Bitness="always64">
+        <File Id="NoticesFile" Source="$(var.StageDir)\THIRD_PARTY_NOTICES.md" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
 
     <Component Id="IdentityFiles" Directory="INSTALLFOLDER" Bitness="always64">
       <File Id="IdentityPackage" Source="$(var.StageDir)\ListopadPP.Identity.msix" KeyPath="yes" />
     </Component>
 
-    <Component Id="VisualAssets" Directory="ASSETSDIR" Bitness="always64">
-      <File Id="StoreLogo" Source="$(var.StageDir)\Assets\ListopadPP-StoreLogo.png" KeyPath="yes" />
-      <File Id="Square150Logo" Source="$(var.StageDir)\Assets\ListopadPP-Square150x150Logo.png" />
-      <File Id="Square44Logo" Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-16.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-16_altform-unplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-16_altform-lightunplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-20.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-20_altform-unplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-20_altform-lightunplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-24.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-24_altform-unplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-24_altform-lightunplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-30.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-30_altform-unplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-30_altform-lightunplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-32.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-32_altform-unplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-32_altform-lightunplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-36.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-36_altform-unplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-36_altform-lightunplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-40.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-40_altform-unplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-40_altform-lightunplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-44.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-44_altform-unplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-44_altform-lightunplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-48.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-48_altform-unplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-48_altform-lightunplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-60.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-60_altform-unplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-60_altform-lightunplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-64.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-64_altform-unplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-64_altform-lightunplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-72.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-72_altform-unplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-72_altform-lightunplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-80.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-80_altform-unplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-80_altform-lightunplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-96.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-96_altform-unplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-96_altform-lightunplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-256.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-256_altform-unplated.png" />
-      <File Source="$(var.StageDir)\Assets\ListopadPP-Square44x44Logo.targetsize-256_altform-lightunplated.png" />
-    </Component>
+    <!-- Harvested from the staged directory: 48 logo variants, and the exact
+         set changes whenever the asset generator gains a target size. Listing
+         them by hand is how the previous revision drifted out of sync. -->
+    <ComponentGroup Id="VisualAssets" Directory="ASSETSDIR">
+      <Files Include="$(var.StageDir)\Assets\*.png" />
+    </ComponentGroup>
 
-    <Component Id="DependencyLicenses" Directory="LICENSESDIR" Bitness="always64">
-      <File Source="$(var.StageDir)\licenses\PCRE2.txt" KeyPath="yes" />
-      <File Source="$(var.StageDir)\licenses\pugixml.txt" />
-      <File Source="$(var.StageDir)\licenses\QuickJS-NG.txt" />
-      <File Source="$(var.StageDir)\licenses\tidy-html5.txt" />
-      <File Source="$(var.StageDir)\licenses\uchardet.txt" />
-      <File Source="$(var.StageDir)\licenses\yyjson.txt" />
-      <File Source="$(var.StageDir)\licenses\Scintilla-Lexilla.txt" />
-      <File Source="$(var.StageDir)\licenses\Emmet.txt" />
-    </Component>
+    <ComponentGroup Id="DependencyLicenses" Directory="LICENSESDIR">
+      <Files Include="$(var.StageDir)\licenses\*.txt" />
+    </ComponentGroup>
 
     <Component Id="ClassicContextMenu" Directory="INSTALLFOLDER" Bitness="always64"
                Condition="LISTOPAD_REGISTER_SPARSE &lt;&gt; &quot;1&quot;">
@@ -105,10 +72,10 @@
     </Component>
 
     <Feature Id="Complete" Title="Listopad++" Level="1">
-      <ComponentRef Id="ApplicationFiles" />
+      <ComponentGroupRef Id="ApplicationFiles" />
       <ComponentRef Id="IdentityFiles" />
-      <ComponentRef Id="VisualAssets" />
-      <ComponentRef Id="DependencyLicenses" />
+      <ComponentGroupRef Id="VisualAssets" />
+      <ComponentGroupRef Id="DependencyLicenses" />
       <ComponentRef Id="ClassicContextMenu" />
     </Feature>
 

@@ -25,13 +25,13 @@
                         MaxVersionTested="10.0.26100.0" />
   </Dependencies>
   <Applications>
-    <!-- Deliberately NOT the editor. A sparse package claims its entire external
-         content directory and refuses to launch any binary it does not declare,
-         so naming the editor here would give its windows the package identity
-         (and an accent-coloured taskbar backplate), while naming a stub beside
-         it would make the editor unlaunchable. The external location therefore
-         holds only the context-menu server and this host, and the editor lives
-         outside it entirely. -->
+    <!-- Deliberately not the editor. What binds an executable to this package is
+         the <msix> element in its own embedded manifest, and that binding is
+         what makes the shell plate the taskbar icon with the accent colour. The
+         editor no longer carries it, so it must not be named here either: the
+         two must agree, or CreateProcess fails with ERROR_FILE_NOT_FOUND. The
+         context menu runs through the COM surrogate, so this host is never
+         executed and only satisfies the required attribute. -->
     <Application Id="ListopadShellHost" Executable="ListopadShellHost.exe"
                  uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
       <uap:VisualElements AppListEntry="none" DisplayName="Listopad++"
