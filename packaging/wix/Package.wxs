@@ -42,7 +42,8 @@
       <File Source="$(var.StageDir)\licenses\Emmet.txt" />
     </Component>
 
-    <Component Id="ClassicContextMenu" Directory="INSTALLFOLDER" Bitness="always64">
+    <Component Id="ClassicContextMenu" Directory="INSTALLFOLDER" Bitness="always64"
+               Condition="LISTOPAD_REGISTER_SPARSE &lt;&gt; &quot;1&quot;">
       <RegistryKey Root="HKLM" Key="Software\Classes\*\shell\ListopadPP">
         <RegistryValue Name="MUIVerb" Type="string"
                        Value="@[INSTALLFOLDER]ListopadShell.dll,-101" />

@@ -23,6 +23,22 @@ function Reset-ChildDirectory([string]$Path) {
   New-Item -ItemType Directory -Force -Path $Path | Out-Null
 }
 
+function Find-LockedFile([string]$Path) {
+  if (-not (Test-Path $Path)) { return $null }
+  foreach ($file in Get-ChildItem -LiteralPath $Path -Recurse -File) {
+    $stream = $null
+    try {
+      $stream = [IO.File]::Open($file.FullName, [IO.FileMode]::Open,
+                                [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    } catch {
+      return $file.FullName
+    } finally {
+      if ($null -ne $stream) { $stream.Dispose() }
+    }
+  }
+  return $null
+}
+
 if (-not $SkipBuild) {
   & (Join-Path $PSScriptRoot 'build.ps1') -Preset release -Version $Version -Publisher $Publisher
 }
@@ -86,12 +102,34 @@ foreach ($entry in $licenseSources.GetEnumerator()) {
 Copy-Item (Join-Path $repo 'licenses\Scintilla-Lexilla.txt'), (Join-Path $repo 'licenses\Emmet.txt') -Destination $licenseDirectory
 
 $portable = Join-Path $out 'portable'
-Reset-ChildDirectory $portable
-Copy-Item (Join-Path $stage '*') $portable -Recurse -Force
-New-Item -ItemType File -Path (Join-Path $portable 'portable.flag') -Force | Out-Null
+$portableImage = Join-Path $out 'portable-image'
+Reset-ChildDirectory $portableImage
+Copy-Item (Join-Path $stage '*') $portableImage -Recurse -Force
+New-Item -ItemType File -Path (Join-Path $portableImage 'portable.flag') -Force | Out-Null
 $zip = Join-Path $out "ListopadPP-$Version-win-x64-portable.zip"
 if (Test-Path $zip) { Remove-Item -LiteralPath $zip -Force }
-Compress-Archive -Path (Join-Path $portable '*') -DestinationPath $zip -CompressionLevel Optimal
+Compress-Archive -Path (Join-Path $portableImage '*') -DestinationPath $zip -CompressionLevel Optimal
+
+$lockedFile = Find-LockedFile $portable
+if ($lockedFile) {
+  Write-Warning "The development portable directory is in use by '$lockedFile' and was left unchanged. The portable ZIP was still created from the new image."
+  Remove-Item -LiteralPath $portableImage -Recurse -Force
+} else {
+  $portableBackup = Join-Path $out "portable.backup-$([guid]::NewGuid().ToString('N'))"
+  $hadPortable = Test-Path $portable
+  if ($hadPortable) { Move-Item -LiteralPath $portable -Destination $portableBackup }
+  try {
+    Move-Item -LiteralPath $portableImage -Destination $portable
+  } catch {
+    if ($hadPortable -and (Test-Path $portableBackup) -and -not (Test-Path $portable)) {
+      Move-Item -LiteralPath $portableBackup -Destination $portable
+    }
+    throw
+  }
+  if ($hadPortable -and (Test-Path $portableBackup)) {
+    Remove-Item -LiteralPath $portableBackup -Recurse -Force
+  }
+}
 
 $wix = Get-Command wix -ErrorAction SilentlyContinue
 if ($wix) {
