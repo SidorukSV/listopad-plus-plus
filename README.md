@@ -1,40 +1,51 @@
 # Listopad++
 
 <p align="center">
-  <img src="assets/listopad-plus-plus.png" width="64" height="64" alt="Listopad++ icon">
+  <img src="assets/listopad-plus-plus.png" width="64" height="64" alt="Иконка Listopad++">
 </p>
 
-Listopad++ is a fast, native, fully offline text editor for Windows 10 2004+
-and Windows 11. It is written in C++20/Win32, has no background process,
-telemetry, news, ads, updater, or network code.
+Listopad++ — быстрый нативный текстовый редактор для Windows 10 2004+ и
+Windows 11. Он написан на C++20/Win32, быстро запускается и во время работы не
+обращается к сети. В приложении нет телеметрии, новостей, рекламы, фонового
+процесса, автообновления и загрузки плагинов.
 
-## Implemented v1 features
+Текущая версия: **0.1.1**. История изменений приведена в
+[CHANGELOG.md](CHANGELOG.md).
 
-- one instance per Windows user, Unicode named-pipe forwarding, tabs, long/UNC paths;
-- statically embedded Scintilla 5.6.4 and Lexilla 5.5.1, folding, line numbers,
-  light/dark system theme, automatic language detection and manual access to
-  every built-in Lexilla lexer;
-- hybrid HTML highlighting that keeps markup, JavaScript and CSS-in-`style`
-  token classes separate, plus local BSL (`.bsl`) and OneScript (`.os`)
-  highlighting with Cyrillic identifiers and no language server;
-- UTF-8 internal text with strict BOM/UTF detection, uchardet fallback, manual
-  reopen as UTF-8/UTF-16/Windows-1251/1252/CP866, and source encoding/EOL preservation;
-- strict JSON, XML and conservative HTML formatting as one undo operation;
-- Emmet 2.4.11 on a lazily created, memory-limited QuickJS-NG runtime;
-- PCRE2 10.47 UTF/UCP/JIT search and replacement in a non-modal panel, including
-  whole words, wrap, selection/all-tabs scope, cancellation and resource limits;
-- directory watching with explicit Reload/Keep conflict handling and guarded,
-  atomic saves;
-- memory-mapped, virtualized read-only mode for files from 128 MiB (configurable),
-  with asynchronous text/regexp search;
-- classic HKCU context-menu registration for portable builds and an isolated
-  `IExplorerCommand` DLL plus sparse identity manifest for the Windows 11 menu;
-- session-long UAC save broker: the editor stays unelevated and keeps all tabs open.
+## Возможности
 
-The intentionally deferred features are directory search, hex view, diff/merge,
-plugins, LSP, completion, crash recovery, session restore and auto-update.
+- один экземпляр на пользователя Windows, вкладки и передача новых файлов уже
+  запущенному редактору через локальный именованный канал;
+- поддержка Unicode-путей, пробелов, UNC и путей длиннее 260 символов;
+- статически встроенные Scintilla 5.6.4 и Lexilla 5.5.1: подсветка синтаксиса,
+  сворачивание блоков, номера строк и ручной выбор всех штатных лексеров;
+- раздельная подсветка HTML, JavaScript и CSS внутри `<style>`;
+- локальная подсветка BSL (`.bsl`) и OneScript (`.os`) с кириллическими
+  идентификаторами, без BSL Server и фонового языкового сервера;
+- системная светлая или тёмная тема;
+- внутреннее представление текста в UTF-8 со строгим распознаванием BOM и UTF,
+  резервным определением legacy-кодировки через uchardet и ручным переоткрытием
+  в UTF-8, UTF-16, Windows-1251, Windows-1252 или CP866;
+- сохранение исходной кодировки, BOM и типа окончания строк;
+- форматирование JSON, XML и HTML как одной отменяемой операции;
+- Emmet 2.4.11 для HTML/XML/JSX и CSS-подобных языков на лениво создаваемом
+  QuickJS-NG runtime;
+- неблокирующий поиск и замена на PCRE2 10.47 с UTF/UCP/JIT, regexp,
+  `$0`/`$1…$99`/`${name}`, поиском по выделению и всем вкладкам;
+- реакция на внешнее изменение файла с явным выбором «Перезагрузить» или
+  «Оставить» и защитой от перезаписи более новой дисковой версии;
+- атомарное сохранение и UAC-broker: защищённый файл сохраняется после одного
+  запроса UAC без перезапуска редактора и повторного поиска файла;
+- виртуализированный read-only режим для файлов от 128 МиБ с memory mapping и
+  асинхронным поиском;
+- классическое контекстное меню через HKCU и современная команда
+  `IExplorerCommand` для Windows 11.
 
-## Command line
+В версию 0.1.1 не входят поиск по каталогам, hex-просмотр, diff/merge, плагины,
+LSP, автодополнение, восстановление после сбоя, восстановление сессии и
+автообновление.
+
+## Командная строка
 
 ```text
 ListopadPP.exe [--line N[:M]] [--encoding NAME] <file...>
@@ -42,15 +53,20 @@ ListopadPP.exe --register-context-menu
 ListopadPP.exe --unregister-context-menu
 ```
 
-Common encodings include `utf-8`, `utf-8-bom`, `utf-16le`, `utf-16be`,
-`windows-1251`, `windows-1252` and `cp866`.
+Примеры кодировок: `utf-8`, `utf-8-bom`, `utf-16le`, `utf-16be`,
+`windows-1251`, `windows-1252` и `cp866`.
 
-## Building
+## Сборка
 
-Requirements: Windows x64, Visual Studio 2022 Build Tools with MSVC and a
-Windows 10/11 SDK, CMake 3.29+, Ninja, Git and PowerShell 7 or Windows PowerShell.
-Dependencies are locked by `vcpkg.json`; Scintilla and Lexilla are fetched at
-verified revisions by CMake.
+Требования:
+
+- Windows x64;
+- Visual Studio 2022 Build Tools с MSVC;
+- Windows 10/11 SDK;
+- CMake 3.29+, Ninja, Git и PowerShell 7 либо Windows PowerShell.
+
+Зависимости закреплены в `vcpkg.json`. Scintilla и Lexilla загружаются CMake из
+зафиксированных источников с проверкой версии или SHA-256.
 
 ```powershell
 ./scripts/bootstrap-vcpkg.ps1
@@ -58,7 +74,7 @@ verified revisions by CMake.
 ./scripts/build.ps1 -Preset release
 ```
 
-The direct equivalent is:
+Прямой эквивалент для Debug-сборки:
 
 ```powershell
 $env:VCPKG_ROOT = "$PWD/.deps/vcpkg"
@@ -67,21 +83,19 @@ cmake --build --preset debug --parallel
 ctest --preset debug --output-on-failure
 ```
 
-## Packaging and signing
+## Упаковка и подпись
 
-Install WiX v4 (`dotnet tool install --global wix`) to produce MSI in addition
-to the portable ZIP and sparse identity MSIX:
+Для создания MSI в дополнение к portable ZIP и sparse identity MSIX установите
+WiX v4:
 
 ```powershell
-./scripts/package.ps1 -Version 0.1.0
+dotnet tool install --global wix
+./scripts/package.ps1 -Version 0.1.1
 ```
 
-Unsigned builds run normally, but Release UAC saves and the modern Windows 11
-context menu are deliberately disabled. An unsigned MSI installs the classic
-fallback without attempting sparse-package registration. For local development,
-create a test certificate explicitly and package with it. Certificate creation
-shows a UAC prompt because MSIX deployment requires the public development
-certificate in the local machine `TrustedPeople` store:
+Неподписанная сборка запускается как обычно, но UAC-сохранение и современное
+контекстное меню Windows 11 намеренно отключаются. Для локальной разработки
+можно явно создать тестовый сертификат:
 
 ```powershell
 ./scripts/new-dev-certificate.ps1
@@ -89,27 +103,30 @@ $password = ConvertTo-SecureString 'listopad-dev-only' -AsPlainText -Force
 ./scripts/package.ps1 -PfxPath ./.deps/signing/ListopadPP.Development.pfx -PfxPassword $password
 ```
 
-Production CI should pass a certificate whose subject exactly matches
-`-Publisher`, or provide an external signing wrapper through `-SignCommand`.
-The same signer must be applied to `ListopadPP.exe`, `ListopadElevated.exe`,
-`ListopadShell.dll`, the identity MSIX and the MSI.
+Основной EXE, UAC-helper, Shell DLL, MSIX и MSI должны быть подписаны одним
+сертификатом. Production CI принимает сертификат через защищённые secrets либо
+внешний signing service.
 
-Portable users can choose **Tools → Register classic context menu**. The command
-writes only under `HKCU\Software\Classes`, uses the selected Listopad++ UI
-language for its title, and unregister removes that tree. The modern Windows 11
-command is supplied by the signed sparse identity package installed by the MSI.
+В portable-сборке классическое меню регистрируется командой
+**Инструменты → Зарегистрировать классическое контекстное меню**. Изменения
+вносятся только в `HKCU\Software\Classes`; команда удаления полностью убирает
+эту регистрацию.
 
-## Settings
+## Настройки
 
-Settings are JSON at `%LOCALAPPDATA%\Listopad++\settings.json`. If
-`portable.flag` exists beside the executable, `settings.json` is stored there.
-Supported keys include `uiLanguage` (`ru`/`en`), `theme` (`system`/`light`/`dark`),
-`fontFace`, `fontSize`, `indentSize`, `indentWithTabs`, and
-`largeFileThreshold` (bytes).
+Обычная установка хранит настройки в
+`%LOCALAPPDATA%\Listopad++\settings.json`. Если рядом с EXE находится
+`portable.flag`, используется `settings.json` из каталога приложения.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
-[docs/PUBLISHING.md](docs/PUBLISHING.md), and [SECURITY.md](SECURITY.md) for
-design, repository governance, and trust-boundary details.
+Основные параметры: `uiLanguage` (`ru`/`en`), `theme`
+(`system`/`light`/`dark`), `fontFace`, `fontSize`, `indentSize`,
+`indentWithTabs` и `largeFileThreshold` в байтах.
 
-Contributions are accepted through pull requests; see
+## Разработка и безопасность
+
+Архитектура описана в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), выпуск
+релизов — в [docs/PUBLISHING.md](docs/PUBLISHING.md), границы доверия — в
+[SECURITY.md](SECURITY.md).
+
+Изменения принимаются только через pull request. Правила участия приведены в
 [CONTRIBUTING.md](CONTRIBUTING.md).

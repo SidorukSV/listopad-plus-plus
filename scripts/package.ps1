@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$Version = '0.1.0',
+  [string]$Version = '0.1.1',
   [string]$Publisher = 'CN=ListopadPP Development',
   [string]$PackageName = 'ListopadPP',
   [string]$PfxPath,
