@@ -51,6 +51,9 @@ if ($LASTEXITCODE) { throw 'CMake install failed.' }
 Copy-Item (Join-Path $repo 'README.md'), (Join-Path $repo 'LICENSE'), `
           (Join-Path $repo 'THIRD_PARTY_NOTICES.md') -Destination $stage
 & (Join-Path $PSScriptRoot 'generate-assets.ps1') -Destination (Join-Path $stage 'Assets')
+# Installed alongside the binaries: the MSI custom actions run it instead of an
+# inline command, which Windows Installer would mangle.
+Copy-Item (Join-Path $repo 'packaging\wix\shell-integration.ps1') $stage -Force
 
 $sdkBin = Get-ChildItem (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin') -Directory |
   Where-Object { $_.Name -match '^\d+\.\d+\.' } | Sort-Object Name -Descending | Select-Object -First 1
