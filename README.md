@@ -96,12 +96,14 @@ WiX v5:
 
 ```powershell
 dotnet tool install --global wix --version "5.*"
+wix extension add -g WixToolset.UI.wixext/5.0.2
 ./scripts/package.ps1 -Version 0.1.1
 ```
 
 Версию нужно указывать явно. В v4 нет элемента `<Files>`, которым описываются
 наборы логотипов и лицензий, а v6 и v7 требуют принять платную лицензию
-Open Source Maintenance Fee.
+Open Source Maintenance Fee. Расширение `WixToolset.UI.wixext` обязательно:
+без него не соберутся диалоги установщика.
 
 Неподписанная сборка запускается как обычно, но UAC-сохранение и современное
 контекстное меню Windows 11 намеренно отключаются. Для локальной разработки

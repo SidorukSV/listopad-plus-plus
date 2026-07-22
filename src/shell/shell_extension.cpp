@@ -27,14 +27,17 @@ std::filesystem::path module_directory() {
   path.resize(length); return std::filesystem::path(path).parent_path();
 }
 
-// The packaged layout keeps this DLL in the package's external content
-// directory while the editor ships elsewhere, so it publishes its own location
-// on startup. Fall back to the historical layout for portable, classic and MSI
-// installs, where the two share a directory and the value may never have been
-// written.
+// A sibling editor always wins. The recorded location is per-user and survives
+// uninstalls, so an MSI-installed extension would otherwise launch whatever
+// development or portable copy happened to write the value last. The registry
+// is only consulted for the packaged layout, where this DLL ships in the
+// package's external content directory and the editor lives elsewhere.
 std::filesystem::path editor_path() {
+  std::error_code error;
+  const auto sibling = module_directory() / L"ListopadPP.exe";
+  if (std::filesystem::exists(sibling, error)) return sibling;
   if (const auto recorded = listopad::recorded_executable_location()) return *recorded;
-  return module_directory() / L"ListopadPP.exe";
+  return sibling;
 }
 
 std::filesystem::path editor_directory() { return editor_path().parent_path(); }

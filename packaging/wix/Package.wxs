@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="Listopad++" Manufacturer="Listopad++ Contributors"
            Version="$(var.ProductVersion)" UpgradeCode="3D765D12-AE8D-4C77-9F39-C5CBF4884FD9"
-           Scope="perMachine" Compressed="yes">
+           Scope="perMachine" Compressed="yes" Codepage="1251" Language="1049">
     <MajorUpgrade DowngradeErrorMessage="A newer version of Listopad++ is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <Property Id="LISTOPAD_REGISTER_SPARSE" Value="$(var.RegisterSparse)" />
@@ -13,13 +14,30 @@
         <Directory Id="LICENSESDIR" Name="licenses" />
       </Directory>
     </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+    <StandardDirectory Id="DesktopFolder" />
+
+    <!-- The packaged application is hidden from the app list (AppListEntry
+         "none"), because it only hosts the context-menu server. Without these
+         shortcuts a machine-wide install left nothing in Start at all. -->
+    <Component Id="DesktopShortcut" Directory="DesktopFolder" Bitness="always64">
+      <Shortcut Id="ListopadDesktopShortcut" Name="Listopad++"
+                Description="Fast offline text editor"
+                Target="[INSTALLFOLDER]ListopadPP.exe" WorkingDirectory="INSTALLFOLDER" />
+      <RegistryValue Root="HKLM" Key="Software\Listopad++" Name="DesktopShortcut"
+                     Type="integer" Value="1" KeyPath="yes" />
+    </Component>
 
     <!-- One file per component. An automatically generated GUID is only legal
          when a component holds a single file, or a versioned keypath alongside
          unversioned companions; grouping several binaries broke the build. -->
     <ComponentGroup Id="ApplicationFiles" Directory="INSTALLFOLDER">
       <Component Bitness="always64">
-        <File Id="ListopadPPExe" Source="$(var.StageDir)\ListopadPP.exe" KeyPath="yes" />
+        <File Id="ListopadPPExe" Source="$(var.StageDir)\ListopadPP.exe" KeyPath="yes">
+          <Shortcut Id="ListopadStartMenuShortcut" Directory="ProgramMenuFolder"
+                    Name="Listopad++" Description="Fast offline text editor"
+                    WorkingDirectory="INSTALLFOLDER" Advertise="no" />
+        </File>
       </Component>
       <Component Bitness="always64">
         <File Id="ListopadElevatedExe" Source="$(var.StageDir)\ListopadElevated.exe" KeyPath="yes" />
@@ -71,13 +89,24 @@
       </RegistryKey>
     </Component>
 
-    <Feature Id="Complete" Title="Listopad++" Level="1">
+    <Feature Id="Complete" Title="Listopad++" Description="Редактор и контекстное меню"
+             Level="1" AllowAbsent="no">
       <ComponentGroupRef Id="ApplicationFiles" />
       <ComponentRef Id="IdentityFiles" />
       <ComponentGroupRef Id="VisualAssets" />
       <ComponentGroupRef Id="DependencyLicenses" />
       <ComponentRef Id="ClassicContextMenu" />
+
+      <!-- Its own feature so the install dialog can offer it as a checkbox
+           rather than silently dropping an icon on the desktop. -->
+      <Feature Id="DesktopShortcutFeature" Title="Ярлык на рабочем столе"
+               Description="Создать ярлык Listopad++ на рабочем столе" Level="1">
+        <ComponentRef Id="DesktopShortcut" />
+      </Feature>
     </Feature>
+
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+    <ui:WixUI Id="WixUI_FeatureTree" InstallDirectory="INSTALLFOLDER" />
 
     <CustomAction Id="RegisterSparsePackage" Directory="INSTALLFOLDER"
                   Execute="immediate" Impersonate="yes" Return="check"
@@ -86,8 +115,13 @@
                   Execute="immediate" Impersonate="yes" Return="ignore"
                   ExeCommand="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;Get-AppxPackage -Name 'ListopadPP' | Remove-AppxPackage&quot;" />
     <InstallExecuteSequence>
+      <!-- No VersionNT64 gate. Windows Installer reports 603 for everything from
+           Windows 8.1 onwards, Windows 11 included, so a ">= 1000" test is never
+           true and silently skipped the registration, leaving the install with
+           no context menu at all. The app already requires Windows 10 through
+           its own manifest. -->
       <Custom Action="RegisterSparsePackage" After="InstallFinalize"
-              Condition="NOT Installed AND VersionNT64 &gt;= 1000 AND LISTOPAD_REGISTER_SPARSE = &quot;1&quot;" />
+              Condition="NOT Installed AND LISTOPAD_REGISTER_SPARSE = &quot;1&quot;" />
       <Custom Action="UnregisterSparsePackage" Before="RemoveFiles"
               Condition="REMOVE = &quot;ALL&quot;" />
     </InstallExecuteSequence>

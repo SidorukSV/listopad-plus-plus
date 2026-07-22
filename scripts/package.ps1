@@ -176,14 +176,28 @@ if ($lockedFile) {
 
 $wix = Get-Command wix -ErrorAction SilentlyContinue
 if ($wix) {
+  # The licence dialog needs RTF. Deriving it from LICENSE keeps the installer
+  # from quoting a stale copy of the terms.
+  $licenseRtf = Join-Path $out 'License.rtf'
+  $licenseText = Get-Content (Join-Path $repo 'LICENSE') -Raw
+  foreach ($pair in @(@('\', '\\'), @('{', '\{'), @('}', '\}'))) {
+    $licenseText = $licenseText.Replace($pair[0], $pair[1])
+  }
+  $licenseBody = ($licenseText -split '\r?\n') -join '\par' + "`r`n"
+  [IO.File]::WriteAllText($licenseRtf,
+    "{\rtf1\ansi\deff0{\fonttbl{\f0\fswiss Segoe UI;}}\fs18`r`n$licenseBody`r`n}",
+    [Text.ASCIIEncoding]::new())
+
   $msi = Join-Path $out "ListopadPP-$Version-win-x64.msi"
   $registerSparse = if ($PfxPath -or $SignCommand) { '1' } else { '0' }
   & $wix.Source build (Join-Path $repo 'packaging\wix\Package.wxs') -arch x64 `
-    -d "StageDir=$stage" -d "ProductVersion=$Version" -d "RegisterSparse=$registerSparse" -o $msi
+    -ext WixToolset.UI.wixext -culture ru-ru `
+    -d "StageDir=$stage" -d "ProductVersion=$Version" -d "RegisterSparse=$registerSparse" `
+    -d "LicenseRtf=$licenseRtf" -o $msi
   if ($LASTEXITCODE) { throw 'WiX MSI build failed.' }
   if ($PfxPath -or $SignCommand) { Invoke-Signer $msi }
 } else {
-  Write-Warning 'WiX v4 was not found; portable ZIP and sparse identity package were created, MSI was skipped.'
+  Write-Warning 'WiX v5 was not found; portable ZIP and sparse identity package were created, MSI was skipped.'
 }
 
 Write-Host "Artifacts are available in $out"
