@@ -25,12 +25,14 @@
                         MaxVersionTested="10.0.26100.0" />
   </Dependencies>
   <Applications>
-    <!-- Executable must name a binary that actually lives in the package's
-         external content directory. Pointing it at a stub while the editor sits
-         in the same directory makes Windows refuse to launch the editor at all
-         (CreateProcess fails with ERROR_FILE_NOT_FOUND), because the package
-         claims the whole directory and only runs what it declares. -->
-    <Application Id="ListopadPP" Executable="ListopadPP.exe"
+    <!-- Deliberately NOT the editor. A sparse package claims its entire external
+         content directory and refuses to launch any binary it does not declare,
+         so naming the editor here would give its windows the package identity
+         (and an accent-coloured taskbar backplate), while naming a stub beside
+         it would make the editor unlaunchable. The external location therefore
+         holds only the context-menu server and this host, and the editor lives
+         outside it entirely. -->
+    <Application Id="ListopadShellHost" Executable="ListopadShellHost.exe"
                  uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
       <uap:VisualElements AppListEntry="none" DisplayName="Listopad++"
                           Description="Fast offline text editor"

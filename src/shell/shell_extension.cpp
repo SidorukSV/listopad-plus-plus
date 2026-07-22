@@ -26,8 +26,34 @@ std::filesystem::path module_directory() {
   path.resize(length); return std::filesystem::path(path).parent_path();
 }
 
+// A sparse identity package claims its whole external content directory and
+// refuses to launch anything it does not declare, so the editor cannot sit
+// beside this DLL when the package provides the modern context menu. The editor
+// records its own location on startup; fall back to the historical layout so
+// portable and classic installs keep working before it has ever run.
+std::optional<std::filesystem::path> recorded_editor_path() {
+  DWORD size = 0;
+  if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\ListopadPP", L"ExecutablePath",
+                   RRF_RT_REG_SZ, nullptr, nullptr, &size) != ERROR_SUCCESS || !size) return std::nullopt;
+  std::wstring buffer(size / sizeof(wchar_t), L'\0');
+  if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\ListopadPP", L"ExecutablePath",
+                   RRF_RT_REG_SZ, nullptr, buffer.data(), &size) != ERROR_SUCCESS) return std::nullopt;
+  buffer.resize(wcslen(buffer.c_str()));
+  std::error_code error;
+  std::filesystem::path path(buffer);
+  if (buffer.empty() || !std::filesystem::exists(path, error)) return std::nullopt;
+  return path;
+}
+
+std::filesystem::path editor_path() {
+  if (const auto recorded = recorded_editor_path()) return *recorded;
+  return module_directory() / L"ListopadPP.exe";
+}
+
+std::filesystem::path editor_directory() { return editor_path().parent_path(); }
+
 std::filesystem::path shell_settings_path() {
-  const auto directory = module_directory();
+  const auto directory = editor_directory();
   if (std::filesystem::exists(directory / L"portable.flag")) return directory / L"settings.json";
   PWSTR local = nullptr;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &local))) {
@@ -87,7 +113,7 @@ class ExplorerCommand final : public IExplorerCommand {
     return SHStrDupW(russian_ui() ? L"Открыть в Listopad++" : L"Open in Listopad++", title);
   }
   IFACEMETHODIMP GetIcon(IShellItemArray*, LPWSTR* icon) override {
-    const std::wstring value = (module_directory() / L"ListopadPP.exe").wstring() + L",0";
+    const std::wstring value = editor_path().wstring() + L",0";
     return SHStrDupW(value.c_str(), icon);
   }
   IFACEMETHODIMP GetToolTip(IShellItemArray*, LPWSTR* tip) override {
@@ -101,7 +127,7 @@ class ExplorerCommand final : public IExplorerCommand {
   }
   IFACEMETHODIMP Invoke(IShellItemArray* items, IBindCtx*) override {
     if (!items) return E_INVALIDARG;
-    std::wstring command = listopad::quote_command_line_argument((module_directory() / L"ListopadPP.exe").wstring());
+    std::wstring command = listopad::quote_command_line_argument(editor_path().wstring());
     DWORD count = 0; items->GetCount(&count);
     for (DWORD index = 0; index < count; ++index) {
       IShellItem* item = nullptr;
@@ -115,7 +141,7 @@ class ExplorerCommand final : public IExplorerCommand {
     }
     STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
     std::wstring mutable_command = command;
-    const auto directory = module_directory();
+    const auto directory = editor_directory();
     if (!CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, FALSE, 0, nullptr,
                         directory.c_str(), &startup, &process)) return HRESULT_FROM_WIN32(GetLastError());
     CloseHandle(process.hThread); CloseHandle(process.hProcess); return S_OK;

@@ -37,6 +37,14 @@ bool register_classic_context_menu(const std::string_view ui_language) {
   RegCloseKey(key); SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr); return ok;
 }
 
+void record_executable_location() {
+  HKEY key = nullptr;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\ListopadPP", 0, nullptr, 0, KEY_WRITE,
+                      nullptr, &key, nullptr) != ERROR_SUCCESS) return;
+  set_text(key, L"ExecutablePath", executable_path().wstring());
+  RegCloseKey(key);
+}
+
 bool unregister_classic_context_menu() {
   const LSTATUS status = RegDeleteTreeW(HKEY_CURRENT_USER, kKey);
   SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
