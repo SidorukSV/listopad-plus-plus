@@ -20,8 +20,8 @@ enable required CODEOWNERS approval for release and trust-boundary files.
 
 The Release workflow has two equivalent entry points:
 
-- pushing a semantic version tag such as `v0.1.1`;
-- running the workflow manually and entering `0.1.1` if the tag was forgotten.
+- pushing a semantic version tag such as `v0.1.2`;
+- running the workflow manually and entering `0.1.2` if the tag was forgotten.
 
 A manual run verifies that its selected commit belongs to `main`, creates the
 missing annotated tag, builds and tests the exact version, packages the ZIP,
