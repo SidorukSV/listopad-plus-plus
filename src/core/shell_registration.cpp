@@ -11,6 +11,7 @@
 namespace listopad {
 namespace {
 constexpr wchar_t kKey[] = L"Software\\Classes\\*\\shell\\ListopadPP";
+constexpr wchar_t kExecutableValue[] = L"ExecutablePath";
 
 std::filesystem::path executable_path() {
   std::wstring path(32768, L'\0');
@@ -35,6 +36,30 @@ bool register_classic_context_menu(const std::string_view ui_language) {
     RegCloseKey(command);
   } else ok = false;
   RegCloseKey(key); SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr); return ok;
+}
+
+void record_executable_location(const wchar_t* subkey) {
+  HKEY key = nullptr;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, subkey, 0, nullptr, 0, KEY_WRITE,
+                      nullptr, &key, nullptr) != ERROR_SUCCESS) return;
+  set_text(key, kExecutableValue, executable_path().wstring());
+  RegCloseKey(key);
+}
+
+std::optional<std::filesystem::path> recorded_executable_location(const wchar_t* subkey) {
+  DWORD size = 0;
+  if (RegGetValueW(HKEY_CURRENT_USER, subkey, kExecutableValue, RRF_RT_REG_SZ,
+                   nullptr, nullptr, &size) != ERROR_SUCCESS || size < sizeof(wchar_t))
+    return std::nullopt;
+  std::wstring buffer(size / sizeof(wchar_t), L'\0');
+  if (RegGetValueW(HKEY_CURRENT_USER, subkey, kExecutableValue, RRF_RT_REG_SZ,
+                   nullptr, buffer.data(), &size) != ERROR_SUCCESS) return std::nullopt;
+  buffer.resize(wcslen(buffer.c_str()));
+  if (buffer.empty()) return std::nullopt;
+  std::error_code error;
+  std::filesystem::path path(buffer);
+  if (!std::filesystem::exists(path, error)) return std::nullopt;
+  return path;
 }
 
 bool unregister_classic_context_menu() {

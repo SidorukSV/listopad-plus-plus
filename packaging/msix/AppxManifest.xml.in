@@ -13,7 +13,7 @@
   <Properties>
     <DisplayName>Listopad++</DisplayName>
     <PublisherDisplayName>Listopad++ Contributors</PublisherDisplayName>
-    <Logo>Assets\ListopadPP.png</Logo>
+    <Logo>Assets\ListopadPP-StoreLogo.png</Logo>
     <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
   </Properties>
   <Resources>
@@ -25,13 +25,20 @@
                         MaxVersionTested="10.0.26100.0" />
   </Dependencies>
   <Applications>
-    <Application Id="ListopadPP" Executable="ListopadPP.exe"
+    <!-- Deliberately not the editor. What binds an executable to this package is
+         the <msix> element in its own embedded manifest, and that binding is
+         what makes the shell plate the taskbar icon with the accent colour. The
+         editor no longer carries it, so it must not be named here either: the
+         two must agree, or CreateProcess fails with ERROR_FILE_NOT_FOUND. The
+         context menu runs through the COM surrogate, so this host is never
+         executed and only satisfies the required attribute. -->
+    <Application Id="ListopadShellHost" Executable="ListopadShellHost.exe"
                  uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
       <uap:VisualElements AppListEntry="none" DisplayName="Listopad++"
                           Description="Fast offline text editor"
                           BackgroundColor="transparent"
-                          Square150x150Logo="Assets\ListopadPP.png"
-                          Square44x44Logo="Assets\ListopadPP.png" />
+                          Square150x150Logo="Assets\ListopadPP-Square150x150Logo.png"
+                          Square44x44Logo="Assets\ListopadPP-Square44x44Logo.png" />
       <Extensions>
         <com:Extension Category="windows.comServer">
           <com:ComServer>
