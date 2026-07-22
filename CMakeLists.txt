@@ -32,6 +32,8 @@ set(LISTOPAD_ICON_FILE
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/listopad-plus-plus-multisize.ico")
 configure_file(src/common/icon.rc.in
                "${CMAKE_CURRENT_BINARY_DIR}/ListopadIcon.rc" @ONLY)
+set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/ListopadIcon.rc"
+                            PROPERTIES OBJECT_DEPENDS "${LISTOPAD_ICON_FILE}")
 
 add_library(listopad_core STATIC
   src/core/command_line.cpp
