@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.29)
-set(LISTOPAD_VERSION "0.1.1" CACHE STRING "Listopad++ semantic version")
+set(LISTOPAD_VERSION "0.1.2" CACHE STRING "Listopad++ semantic version")
 project(ListopadPP VERSION "${LISTOPAD_VERSION}" LANGUAGES C CXX RC)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -34,6 +34,15 @@ configure_file(src/common/icon.rc.in
                "${CMAKE_CURRENT_BINARY_DIR}/ListopadIcon.rc" @ONLY)
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/ListopadIcon.rc"
   PROPERTIES OBJECT_DEPENDS "${LISTOPAD_ICON_FILE}")
+
+# The resource scripts pull the version through a generated header, and the
+# generator does not scan .rc includes. Without this a version bump reconfigures
+# and relinks but leaves the old VERSIONINFO in place, so the binaries ship
+# claiming whatever version was built first.
+set(LISTOPAD_VERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/listopad/version.h")
+set_source_files_properties(
+  src/app/resources.rc src/elevated/resources.rc src/shell/resources.rc
+  PROPERTIES OBJECT_DEPENDS "${LISTOPAD_VERSION_HEADER}")
 
 add_library(listopad_core STATIC
   src/core/command_line.cpp
