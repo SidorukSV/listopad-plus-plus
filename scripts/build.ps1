@@ -2,7 +2,7 @@
 param(
   [ValidateSet('debug', 'release')][string]$Preset = 'release',
   [string]$VcpkgRoot = (Join-Path $PSScriptRoot '..\.deps\vcpkg'),
-  [string]$Version = '0.1.0',
+  [string]$Version = '0.1.1',
   [string]$Publisher = 'CN=ListopadPP Development',
   [switch]$SkipTests
 )

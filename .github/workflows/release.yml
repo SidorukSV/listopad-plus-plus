@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release, for example 0.1.0 (the v-tag is created if missing)"
+        description: "Version to release, for example 0.1.1 (the v-tag is created if missing)"
         required: true
         type: string
       prerelease:

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.29)
-set(LISTOPAD_VERSION "0.1.0" CACHE STRING "Listopad++ semantic version")
+set(LISTOPAD_VERSION "0.1.1" CACHE STRING "Listopad++ semantic version")
 project(ListopadPP VERSION "${LISTOPAD_VERSION}" LANGUAGES C CXX RC)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -26,6 +26,8 @@ include(cmake/Scintilla.cmake)
 
 configure_file(src/app/app.manifest.in
                "${CMAKE_CURRENT_BINARY_DIR}/ListopadPP.manifest" @ONLY)
+configure_file(include/listopad/version.h.in
+               "${CMAKE_CURRENT_BINARY_DIR}/generated/listopad/version.h" @ONLY)
 set(LISTOPAD_ICON_FILE
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/listopad-plus-plus-multisize.ico")
 configure_file(src/common/icon.rc.in
@@ -45,7 +47,8 @@ add_library(listopad_core STATIC
   src/core/shell_registration.cpp
   src/core/signature.cpp
   src/core/strings.cpp)
-target_include_directories(listopad_core PUBLIC include PRIVATE assets)
+target_include_directories(listopad_core PUBLIC
+  "${CMAKE_CURRENT_BINARY_DIR}/generated" include PRIVATE assets)
 target_compile_definitions(listopad_core PUBLIC UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN PCRE2_CODE_UNIT_WIDTH=8)
 target_compile_options(listopad_core PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(listopad_core PUBLIC
