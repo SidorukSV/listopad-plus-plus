@@ -57,6 +57,10 @@
       <Component Bitness="always64">
         <File Id="NoticesFile" Source="$(var.StageDir)\THIRD_PARTY_NOTICES.md" KeyPath="yes" />
       </Component>
+      <Component Bitness="always64">
+        <File Id="ShellIntegrationScript" Source="$(var.StageDir)\shell-integration.ps1"
+              KeyPath="yes" />
+      </Component>
     </ComponentGroup>
 
     <Component Id="IdentityFiles" Directory="INSTALLFOLDER" Bitness="always64">
@@ -108,12 +112,17 @@
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
     <ui:WixUI Id="WixUI_FeatureTree" InstallDirectory="INSTALLFOLDER" />
 
+    <!-- The logic lives in shell-integration.ps1. Windows Installer parses `{}`
+         in Formatted fields as conditional blocks, so an inline try/catch loses
+         its bodies before PowerShell runs and the action fails with exit 1.
+         Return="ignore" keeps a failed registration from aborting the install;
+         the script itself falls back to the classic menu. -->
     <CustomAction Id="RegisterSparsePackage" Directory="INSTALLFOLDER"
-                  Execute="immediate" Impersonate="yes" Return="check"
-                  ExeCommand="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;Add-AppxPackage -Path '[INSTALLFOLDER]ListopadPP.Identity.msix' -ExternalLocation '[INSTALLFOLDER]'&quot;" />
+                  Execute="immediate" Impersonate="yes" Return="ignore"
+                  ExeCommand="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]shell-integration.ps1&quot;" />
     <CustomAction Id="UnregisterSparsePackage" Directory="INSTALLFOLDER"
                   Execute="immediate" Impersonate="yes" Return="ignore"
-                  ExeCommand="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;Get-AppxPackage -Name 'ListopadPP' | Remove-AppxPackage&quot;" />
+                  ExeCommand="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]shell-integration.ps1&quot; -Remove" />
     <InstallExecuteSequence>
       <!-- No VersionNT64 gate. Windows Installer reports 603 for everything from
            Windows 8.1 onwards, Windows 11 included, so a ">= 1000" test is never
