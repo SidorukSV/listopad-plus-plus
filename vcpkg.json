@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "listopadpp",
+  "version-string": "0.1.0",
+  "builtin-baseline": "82b6bc886d7b0f8342e34babc2e0b8943f79b0e1",
+  "supports": "windows & x64",
+  "dependencies": [
+    { "name": "pcre2", "features": ["jit"] },
+    "pugixml",
+    "quickjs-ng",
+    "tidy-html5",
+    "uchardet",
+    "yyjson",
+    { "name": "catch2", "version>=": "3.15.2" }
+  ]
+}
+

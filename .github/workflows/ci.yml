@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-x64:
+    name: Windows x64
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ninja
+        run: choco install ninja --no-progress -y
+      - name: Build and test Debug
+        run: ./scripts/build.ps1 -Preset debug
+      - name: Build and test Release
+        run: ./scripts/build.ps1 -Preset release
+      - name: Check third-party licenses
+        run: ./scripts/check-licenses.ps1 -BuildDirectory ./build/release

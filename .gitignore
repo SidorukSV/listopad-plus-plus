@@ -1,0 +1,17 @@
+/build/
+/out/
+/.deps/
+/.vs/
+/.vscode/
+/tools/emmet/node_modules/
+/.agents/
+/.codex/
+*.user
+*.suo
+*.VC.db
+*.pdb
+*.ilk
+*.obj
+*.log
+*.cer
+*.pfx

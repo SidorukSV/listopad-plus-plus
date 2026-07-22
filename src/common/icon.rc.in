@@ -1,0 +1,3 @@
+// Keep the application and UAC broker icon identical. The absolute source
+// path is supplied by CMake so rc.exe does not depend on its working directory.
+101 ICON "@LISTOPAD_ICON_FILE@"

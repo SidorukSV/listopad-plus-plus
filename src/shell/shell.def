@@ -1,0 +1,5 @@
+LIBRARY "ListopadShell"
+EXPORTS
+    DllCanUnloadNow PRIVATE
+    DllGetClassObject PRIVATE
+

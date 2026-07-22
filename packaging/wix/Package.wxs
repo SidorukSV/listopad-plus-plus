@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Listopad++" Manufacturer="Listopad++ Contributors"
+           Version="$(var.ProductVersion)" UpgradeCode="3D765D12-AE8D-4C77-9F39-C5CBF4884FD9"
+           Scope="perMachine" Compressed="yes">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Listopad++ is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Property Id="LISTOPAD_REGISTER_SPARSE" Value="$(var.RegisterSparse)" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Listopad++">
+        <Directory Id="ASSETSDIR" Name="Assets" />
+        <Directory Id="LICENSESDIR" Name="licenses" />
+      </Directory>
+    </StandardDirectory>
+
+    <Component Id="ApplicationFiles" Directory="INSTALLFOLDER" Bitness="always64">
+      <File Id="ListopadPPExe" Source="$(var.StageDir)\ListopadPP.exe" KeyPath="yes" />
+      <File Id="ListopadElevatedExe" Source="$(var.StageDir)\ListopadElevated.exe" />
+      <File Id="ListopadShellDll" Source="$(var.StageDir)\ListopadShell.dll" />
+      <File Id="ReadmeFile" Source="$(var.StageDir)\README.md" />
+      <File Id="LicenseFile" Source="$(var.StageDir)\LICENSE" />
+      <File Id="NoticesFile" Source="$(var.StageDir)\THIRD_PARTY_NOTICES.md" />
+    </Component>
+
+    <Component Id="IdentityFiles" Directory="INSTALLFOLDER" Bitness="always64">
+      <File Id="IdentityPackage" Source="$(var.StageDir)\ListopadPP.Identity.msix" KeyPath="yes" />
+    </Component>
+
+    <Component Id="VisualAssets" Directory="ASSETSDIR" Bitness="always64">
+      <File Id="ListopadLogo" Source="$(var.StageDir)\Assets\ListopadPP.png" KeyPath="yes" />
+    </Component>
+
+    <Component Id="DependencyLicenses" Directory="LICENSESDIR" Bitness="always64">
+      <File Source="$(var.StageDir)\licenses\PCRE2.txt" KeyPath="yes" />
+      <File Source="$(var.StageDir)\licenses\pugixml.txt" />
+      <File Source="$(var.StageDir)\licenses\QuickJS-NG.txt" />
+      <File Source="$(var.StageDir)\licenses\tidy-html5.txt" />
+      <File Source="$(var.StageDir)\licenses\uchardet.txt" />
+      <File Source="$(var.StageDir)\licenses\yyjson.txt" />
+      <File Source="$(var.StageDir)\licenses\Scintilla-Lexilla.txt" />
+      <File Source="$(var.StageDir)\licenses\Emmet.txt" />
+    </Component>
+
+    <Component Id="ClassicContextMenu" Directory="INSTALLFOLDER" Bitness="always64">
+      <RegistryKey Root="HKLM" Key="Software\Classes\*\shell\ListopadPP">
+        <RegistryValue Name="MUIVerb" Type="string"
+                       Value="@[INSTALLFOLDER]ListopadShell.dll,-101" />
+        <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]ListopadPP.exe" />
+        <RegistryValue Name="MultiSelectModel" Type="string" Value="Player" />
+        <RegistryKey Key="command">
+          <RegistryValue Type="string"
+                         Value="&quot;[INSTALLFOLDER]ListopadPP.exe&quot; &quot;%1&quot;"
+                         KeyPath="yes" />
+        </RegistryKey>
+      </RegistryKey>
+    </Component>
+
+    <Feature Id="Complete" Title="Listopad++" Level="1">
+      <ComponentRef Id="ApplicationFiles" />
+      <ComponentRef Id="IdentityFiles" />
+      <ComponentRef Id="VisualAssets" />
+      <ComponentRef Id="DependencyLicenses" />
+      <ComponentRef Id="ClassicContextMenu" />
+    </Feature>
+
+    <CustomAction Id="RegisterSparsePackage" Directory="INSTALLFOLDER"
+                  Execute="immediate" Impersonate="yes" Return="check"
+                  ExeCommand="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;Add-AppxPackage -Path '[INSTALLFOLDER]ListopadPP.Identity.msix' -ExternalLocation '[INSTALLFOLDER]'&quot;" />
+    <CustomAction Id="UnregisterSparsePackage" Directory="INSTALLFOLDER"
+                  Execute="immediate" Impersonate="yes" Return="ignore"
+                  ExeCommand="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command &quot;Get-AppxPackage -Name 'ListopadPP' | Remove-AppxPackage&quot;" />
+    <InstallExecuteSequence>
+      <Custom Action="RegisterSparsePackage" After="InstallFinalize"
+              Condition="NOT Installed AND VersionNT64 &gt;= 1000 AND LISTOPAD_REGISTER_SPARSE = &quot;1&quot;" />
+      <Custom Action="UnregisterSparsePackage" Before="RemoveFiles"
+              Condition="REMOVE = &quot;ALL&quot;" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

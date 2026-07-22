@@ -1,0 +1,5 @@
+# Release and trust-boundary changes should always notify the project owner.
+/.github/ @SidorukSV
+/packaging/ @SidorukSV
+/scripts/ @SidorukSV
+/SECURITY.md @SidorukSV
