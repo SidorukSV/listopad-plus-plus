@@ -56,6 +56,12 @@ ListopadPP.exe --unregister-context-menu
 Примеры кодировок: `utf-8`, `utf-8-bom`, `utf-16le`, `utf-16be`,
 `windows-1251`, `windows-1252` и `cp866`.
 
+Команды `--register-context-menu` и `--unregister-context-menu` управляют
+только классическим HKCU-пунктом. Он предназначен для portable-сборки без
+установленного sparse identity package. Одновременная регистрация классического
+пункта и современного `IExplorerCommand` не нужна: иначе в дополнительном меню
+Windows 11 появятся две одинаковые команды.
+
 ## Сборка
 
 Требования:
