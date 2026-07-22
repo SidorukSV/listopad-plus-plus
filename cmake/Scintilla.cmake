@@ -2,7 +2,12 @@ include(FetchContent)
 
 FetchContent_Declare(
   scintilla_upstream
-  URL https://www.scintilla.org/scintilla564.zip
+  # The project web server occasionally rejects GitHub-hosted runners. The
+  # official SourceForge release mirror is primary; the upstream site remains
+  # a fallback. Both are verified against the same pinned release hash.
+  URL
+    https://downloads.sourceforge.net/project/scintilla/scintilla/5.6.4/scintilla564.zip
+    https://www.scintilla.org/scintilla564.zip
   URL_HASH SHA256=3FFD69532649556978CDBE7EBE1293D9CF3259B290A7974A71E77A32BAC50E12
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
