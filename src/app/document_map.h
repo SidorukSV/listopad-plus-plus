@@ -12,6 +12,7 @@ class DocumentMap final {
   static void attach(HWND map, HWND editor);
   static void restyle(HWND map, HWND editor, std::string_view font_face,
                       bool dark);
+  static void content_changed(HWND map, HWND editor);
   static void sync(HWND map, HWND editor);
 };
 

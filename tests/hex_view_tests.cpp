@@ -56,6 +56,30 @@ TEST_CASE("hex row counts and offset widths cover boundaries") {
   CHECK(hex_offset_width(0x1'0000'0001ull) == 9);
 }
 
+TEST_CASE("hex scrollbar projection is exact when possible and stable when scaled") {
+  CHECK(hex_scroll_position(0, 100, 100) == 0);
+  CHECK(hex_scroll_position(37, 100, 100) == 37);
+  CHECK(hex_scroll_position(200, 100, 100) == 100);
+  CHECK(hex_row_from_scroll_position(37, 100, 100) == 37);
+  CHECK(hex_row_from_scroll_position(-1, 100, 100) == 0);
+
+  constexpr std::uint64_t large_maximum = 1ull << 40;
+  constexpr int scroll_maximum = 1'000'000;
+  CHECK(hex_scroll_position(large_maximum, large_maximum,
+                            scroll_maximum) == scroll_maximum);
+  CHECK(hex_row_from_scroll_position(scroll_maximum, large_maximum,
+                                     scroll_maximum) == large_maximum);
+  std::uint64_t previous = 0;
+  for (int position = 0; position <= scroll_maximum; position += 10'000) {
+    const std::uint64_t row = hex_row_from_scroll_position(
+        position, large_maximum, scroll_maximum);
+    CHECK(row >= previous);
+    CHECK(hex_scroll_position(row, large_maximum, scroll_maximum) <=
+          position);
+    previous = row;
+  }
+}
+
 TEST_CASE("hex patterns accept spaced and compact notation") {
   REQUIRE(parse_hex_pattern("DE AD BE EF"));
   CHECK(*parse_hex_pattern("DE AD BE EF") == bytes({0xde, 0xad, 0xbe, 0xef}));

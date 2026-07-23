@@ -11,7 +11,7 @@ ListopadPP.exe (unelevated, one process per user)
   ├─ ReadDirectoryChangesW watchers
   ├─ cancellable PCRE2 workers
   ├─ lazy QuickJS-NG + fixed Emmet bundle
-  ├─ shared-document Scintilla DocumentMap
+  ├─ cached proportional DocumentMap
   ├─ memory-mapped LargeFileView
   └─ memory-mapped HexViewWindow
         │ authenticated SaveRequest, only after ACCESS_DENIED
@@ -33,10 +33,12 @@ file mapping and paint only visible rows. Their searches run against the mapping
 on cancellable workers. Editing, replacement, formatting and Emmet are disabled
 in these modes.
 
-Editable tabs may also own a narrow Scintilla `DocumentMap`. It shares the
-editor document and styled bytes but owns its visual styles and scrolling. The
-map never marks the shared document read-only; its subclass rejects input and
-uses mouse gestures only for navigation.
+Editable tabs may also own a narrow custom `DocumentMap`. It samples logical
+lines and their Scintilla style colours into a cached bitmap representing the
+whole document. Scrolling redraws only the proportional viewport overlay, so
+the overview remains stable; edits, resizing and theme changes invalidate the
+cached preview. Mouse gestures map directly from the overview ratio to a
+document line.
 
 Built-in language metadata is the single source for extension detection,
 Save As filters, and the canonical extension appended to a new file. Raw

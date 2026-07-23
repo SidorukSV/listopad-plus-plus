@@ -67,6 +67,33 @@ unsigned hex_offset_width(const std::uint64_t size) noexcept {
   return std::clamp(digits, 8u, 16u);
 }
 
+int hex_scroll_position(const std::uint64_t row,
+                        const std::uint64_t maximum_row,
+                        const int maximum_position) noexcept {
+  if (maximum_row == 0 || maximum_position <= 0) return 0;
+  const std::uint64_t clamped_row = std::min(row, maximum_row);
+  if (maximum_row == static_cast<std::uint64_t>(maximum_position)) {
+    return static_cast<int>(clamped_row);
+  }
+  return static_cast<int>(
+      static_cast<long double>(clamped_row) * maximum_position /
+      maximum_row);
+}
+
+std::uint64_t hex_row_from_scroll_position(
+    const int position, const std::uint64_t maximum_row,
+    const int maximum_position) noexcept {
+  if (maximum_row == 0 || maximum_position <= 0) return 0;
+  const int clamped_position =
+      std::clamp(position, 0, maximum_position);
+  if (maximum_row == static_cast<std::uint64_t>(maximum_position)) {
+    return static_cast<std::uint64_t>(clamped_position);
+  }
+  return static_cast<std::uint64_t>(
+      static_cast<long double>(clamped_position) * maximum_row /
+      maximum_position);
+}
+
 HexRowText format_hex_row(const std::span<const std::byte> row,
                           const std::uint64_t offset,
                           const unsigned requested_offset_width) {

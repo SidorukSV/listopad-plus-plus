@@ -23,6 +23,12 @@ struct HexRowText {
 
 [[nodiscard]] std::uint64_t hex_row_count(std::uint64_t size) noexcept;
 [[nodiscard]] unsigned hex_offset_width(std::uint64_t size) noexcept;
+[[nodiscard]] int hex_scroll_position(std::uint64_t row,
+                                      std::uint64_t maximum_row,
+                                      int maximum_position) noexcept;
+[[nodiscard]] std::uint64_t hex_row_from_scroll_position(
+    int position, std::uint64_t maximum_row,
+    int maximum_position) noexcept;
 [[nodiscard]] HexRowText format_hex_row(std::span<const std::byte> row,
                                         std::uint64_t offset,
                                         unsigned offset_width);

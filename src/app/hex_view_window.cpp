@@ -31,6 +31,7 @@ struct State {
   std::uint64_t selection_offset{0};
   std::size_t selection_length{0};
   bool has_selection{false};
+  int wheel_delta{0};
   HFONT font{nullptr};
   bool dark{false};
   std::mutex result_mutex;
@@ -45,6 +46,12 @@ struct Metrics {
   int visible_rows{1};
   int content_width{0};
   unsigned offset_width{8};
+};
+
+struct VerticalScroll {
+  int range_max{0};
+  UINT page{1};
+  int maximum_position{0};
 };
 
 State* state_for(const HWND window) {
@@ -84,28 +91,53 @@ std::uint64_t maximum_first_row(const State& state, const Metrics& metrics) {
       : 0;
 }
 
+VerticalScroll vertical_scroll_for(const std::uint64_t rows,
+                                   const int visible_rows) {
+  VerticalScroll result;
+  if (rows == 0) return result;
+  const std::uint64_t visible =
+      std::min<std::uint64_t>(rows, std::max(1, visible_rows));
+  if (rows - 1 <=
+      static_cast<std::uint64_t>((std::numeric_limits<int>::max)())) {
+    result.range_max = static_cast<int>(rows - 1);
+    result.page = static_cast<UINT>(visible);
+  } else {
+    result.range_max = kScrollScale;
+    result.page = static_cast<UINT>(std::clamp<std::uint64_t>(
+        visible * kScrollScale / rows, 1, kScrollScale + 1));
+  }
+  result.maximum_position =
+      std::max(0, result.range_max - static_cast<int>(result.page) + 1);
+  return result;
+}
+
+int scroll_position_for_row(const std::uint64_t row,
+                            const std::uint64_t maximum_row,
+                            const VerticalScroll& scroll) {
+  return hex_scroll_position(row, maximum_row, scroll.maximum_position);
+}
+
+std::uint64_t row_for_scroll_position(const int position,
+                                      const std::uint64_t maximum_row,
+                                      const VerticalScroll& scroll) {
+  return hex_row_from_scroll_position(position, maximum_row,
+                                      scroll.maximum_position);
+}
+
 void update_scrollbars(const HWND window, State& state) {
   const Metrics metrics = metrics_for(window, state);
   const std::uint64_t rows = hex_row_count(state.file.size());
   const std::uint64_t maximum = maximum_first_row(state, metrics);
   state.first_row = std::min(state.first_row, maximum);
+  const VerticalScroll projected =
+      vertical_scroll_for(rows, metrics.visible_rows);
 
   SCROLLINFO vertical{sizeof(vertical), SIF_RANGE | SIF_PAGE | SIF_POS};
   vertical.nMin = 0;
-  vertical.nMax = kScrollScale;
-  vertical.nPage = rows == 0
-      ? static_cast<UINT>(kScrollScale + 1)
-      : static_cast<UINT>(std::clamp<std::uint64_t>(
-            static_cast<std::uint64_t>(metrics.visible_rows) * kScrollScale /
-                rows,
-            1, kScrollScale + 1));
-  const int maximum_position =
-      std::max(0, vertical.nMax - static_cast<int>(vertical.nPage) + 1);
-  vertical.nPos = maximum == 0
-      ? 0
-      : static_cast<int>(
-            static_cast<long double>(state.first_row) * maximum_position /
-            maximum);
+  vertical.nMax = projected.range_max;
+  vertical.nPage = projected.page;
+  vertical.nPos =
+      scroll_position_for_row(state.first_row, maximum, projected);
   SetScrollInfo(window, SB_VERT, &vertical, TRUE);
 
   RECT client{};
@@ -122,11 +154,21 @@ void update_scrollbars(const HWND window, State& state) {
   SetScrollInfo(window, SB_HORZ, &horizontal, TRUE);
 }
 
-void set_first_row(const HWND window, State& state, const std::uint64_t row) {
+void set_first_row(const HWND window, State& state, const std::uint64_t row,
+                   const bool update_thumb = true) {
   const Metrics metrics = metrics_for(window, state);
-  state.first_row = std::min(row, maximum_first_row(state, metrics));
-  update_scrollbars(window, state);
-  InvalidateRect(window, nullptr, TRUE);
+  const std::uint64_t maximum = maximum_first_row(state, metrics);
+  state.first_row = std::min(row, maximum);
+  if (update_thumb) {
+    const VerticalScroll projected =
+        vertical_scroll_for(hex_row_count(state.file.size()),
+                            metrics.visible_rows);
+    SCROLLINFO vertical{sizeof(vertical), SIF_POS};
+    vertical.nPos =
+        scroll_position_for_row(state.first_row, maximum, projected);
+    SetScrollInfo(window, SB_VERT, &vertical, TRUE);
+  }
+  InvalidateRect(window, nullptr, FALSE);
 }
 
 std::wstring widen_ascii(const std::string_view text) {
@@ -183,6 +225,7 @@ bool HexViewWindow::open(const HWND window,
   state->first_row = 0;
   state->horizontal_offset = 0;
   state->has_selection = false;
+  state->wheel_delta = 0;
   update_scrollbars(window, *state);
   InvalidateRect(window, nullptr, TRUE);
   return true;
@@ -271,22 +314,31 @@ LRESULT CALLBACK HexViewWindow::window_proc(
     return 1;
   } else if (message == WM_VSCROLL && state) {
     const Metrics metrics = metrics_for(window, *state);
+    const std::uint64_t rows = hex_row_count(state->file.size());
     const std::uint64_t maximum = maximum_first_row(*state, metrics);
+    const VerticalScroll projected =
+        vertical_scroll_for(rows, metrics.visible_rows);
     std::uint64_t row = state->first_row;
+    bool update_thumb = true;
     switch (LOWORD(wparam)) {
       case SB_LINEUP:
         if (row > 0) --row;
         break;
       case SB_LINEDOWN:
-        ++row;
+        if (row < maximum) ++row;
         break;
       case SB_PAGEUP:
-        row = row > static_cast<std::uint64_t>(metrics.visible_rows - 1)
-            ? row - static_cast<std::uint64_t>(metrics.visible_rows - 1)
+        row = row > static_cast<std::uint64_t>(
+                        std::max(1, metrics.visible_rows - 1))
+            ? row - static_cast<std::uint64_t>(
+                        std::max(1, metrics.visible_rows - 1))
             : 0;
         break;
       case SB_PAGEDOWN:
-        row += static_cast<std::uint64_t>(metrics.visible_rows - 1);
+        row = std::min(
+            maximum,
+            row + static_cast<std::uint64_t>(
+                      std::max(1, metrics.visible_rows - 1)));
         break;
       case SB_TOP:
         row = 0;
@@ -298,17 +350,17 @@ LRESULT CALLBACK HexViewWindow::window_proc(
       case SB_THUMBTRACK: {
         SCROLLINFO info{sizeof(info), SIF_TRACKPOS | SIF_PAGE | SIF_RANGE};
         GetScrollInfo(window, SB_VERT, &info);
-        const int maximum_position =
-            std::max(1, info.nMax - static_cast<int>(info.nPage) + 1);
-        row = static_cast<std::uint64_t>(
-            static_cast<long double>(std::max(0, info.nTrackPos)) * maximum /
-            maximum_position);
+        row = row_for_scroll_position(info.nTrackPos, maximum, projected);
+        update_thumb = LOWORD(wparam) != SB_THUMBTRACK;
         break;
       }
+      case SB_ENDSCROLL:
+        set_first_row(window, *state, row);
+        return 0;
       default:
         return 0;
     }
-    set_first_row(window, *state, std::min(row, maximum));
+    set_first_row(window, *state, std::min(row, maximum), update_thumb);
     return 0;
   } else if (message == WM_HSCROLL && state) {
     SCROLLINFO info{sizeof(info), SIF_ALL};
@@ -329,17 +381,28 @@ LRESULT CALLBACK HexViewWindow::window_proc(
         std::max(0, info.nMax - static_cast<int>(info.nPage) + 1);
     state->horizontal_offset = std::clamp(position, 0, maximum);
     update_scrollbars(window, *state);
-    InvalidateRect(window, nullptr, TRUE);
+    InvalidateRect(window, nullptr, FALSE);
     return 0;
   } else if (message == WM_MOUSEWHEEL && state) {
-    const int notches = GET_WHEEL_DELTA_WPARAM(wparam) / WHEEL_DELTA;
+    state->wheel_delta += GET_WHEEL_DELTA_WPARAM(wparam);
+    const int notches = state->wheel_delta / WHEEL_DELTA;
+    state->wheel_delta -= notches * WHEEL_DELTA;
+    if (notches == 0) return 0;
+    UINT wheel_lines = 3;
+    SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &wheel_lines, 0);
+    const Metrics metrics = metrics_for(window, *state);
+    const std::uint64_t lines_per_notch =
+        wheel_lines == WHEEL_PAGESCROLL
+            ? static_cast<std::uint64_t>(
+                  std::max(1, metrics.visible_rows - 1))
+            : static_cast<std::uint64_t>(wheel_lines);
     std::uint64_t row = state->first_row;
     const std::uint64_t amount =
-        static_cast<std::uint64_t>(std::abs(notches) * 3);
+        static_cast<std::uint64_t>(std::abs(notches)) * lines_per_notch;
     if (notches > 0)
       row = row > amount ? row - amount : 0;
     else
-      row += amount;
+      row = std::min(maximum_first_row(*state, metrics), row + amount);
     set_first_row(window, *state, row);
     return 0;
   } else if (message == WM_KEYDOWN && state) {

@@ -2175,9 +2175,9 @@ void EditorWindow::on_notify(const NMHDR& notification) {
     for (auto& tab : documents_) if (tab.view == notification.hwndFrom) {
       if (notification.code == SCN_SAVEPOINTLEFT) tab.document.dirty = true;
       if (notification.code == SCN_SAVEPOINTREACHED) tab.document.dirty = false;
-      if (tab.map &&
-          (notification.code == SCN_UPDATEUI ||
-           notification.code == SCN_MODIFIED)) {
+      if (tab.map && notification.code == SCN_MODIFIED) {
+        DocumentMap::content_changed(tab.map, tab.view);
+      } else if (tab.map && notification.code == SCN_UPDATEUI) {
         DocumentMap::sync(tab.map, tab.view);
       }
       handled = true;
