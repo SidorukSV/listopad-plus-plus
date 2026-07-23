@@ -20,31 +20,23 @@ $ErrorActionPreference = 'Stop'
 # Not a param() default: $PSScriptRoot is empty there under Windows PowerShell
 # 5.1, which is what the custom action runs.
 if (-not $InstallDir) { $InstallDir = Split-Path -Parent $PSCommandPath }
-$editor = Join-Path $InstallDir 'ListopadPP.exe'
 $package = Join-Path $InstallDir 'ListopadPP.Identity.msix'
-
-function Invoke-Editor([string[]]$Arguments) {
-  if (-not (Test-Path -LiteralPath $editor)) { return }
-  Start-Process -FilePath $editor -ArgumentList $Arguments -Wait
-}
 
 if ($Remove) {
   try { Get-AppxPackage -Name 'ListopadPP' | Remove-AppxPackage -ErrorAction Stop } catch { }
-  Invoke-Editor @('--unregister-context-menu')
   return
 }
 
-# The modern context menu needs the sparse package, and that only registers when
-# the signing certificate is trusted on this machine. A development certificate
-# never is, so fall back rather than leaving the user with no menu at all.
-$registered = $false
+# Only the modern menu is handled here. The classic entry is a plain MSI
+# component installed unconditionally, so there is nothing to fall back to and
+# nothing to undo: a failure here simply leaves the user on the classic menu.
+# Registration fails whenever the signing certificate is not trusted, which is
+# every machine but the build one while the project signs with a development
+# certificate, so it must never abort the install.
 if (Test-Path -LiteralPath $package) {
   try {
     Add-AppxPackage -Path $package -ExternalLocation $InstallDir -ErrorAction Stop
-    $registered = $true
   } catch {
-    Write-Host "Sparse package registration failed, falling back: $($_.Exception.Message)"
+    Write-Host "Sparse package registration failed, classic menu remains: $($_.Exception.Message)"
   }
 }
-
-if (-not $registered) { Invoke-Editor @('--register-context-menu') }

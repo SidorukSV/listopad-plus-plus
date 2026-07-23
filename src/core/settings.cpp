@@ -60,6 +60,19 @@ Settings load_settings() {
     if (yyjson_val* value = yyjson_obj_get(root, "indentSize"); yyjson_is_int(value)) settings.indent_size = static_cast<int>(yyjson_get_int(value));
     if (yyjson_val* value = yyjson_obj_get(root, "indentWithTabs"); yyjson_is_bool(value)) settings.indent_with_tabs = yyjson_get_bool(value);
     if (yyjson_val* value = yyjson_obj_get(root, "largeFileThreshold"); yyjson_is_uint(value)) settings.large_file_threshold = yyjson_get_uint(value);
+    if (yyjson_val* window = yyjson_obj_get(root, "window"); yyjson_is_obj(window)) {
+      const auto read_int = [](yyjson_val* obj, const char* key, int& target) {
+        if (yyjson_val* value = yyjson_obj_get(obj, key); yyjson_is_int(value)) target = static_cast<int>(yyjson_get_int(value));
+      };
+      read_int(window, "x", settings.window.x);
+      read_int(window, "y", settings.window.y);
+      read_int(window, "width", settings.window.width);
+      read_int(window, "height", settings.window.height);
+      if (yyjson_val* value = yyjson_obj_get(window, "maximized"); yyjson_is_bool(value)) settings.window.maximized = yyjson_get_bool(value);
+      // A stored rectangle is only meaningful with a positive extent; anything
+      // else is treated as "no saved geometry" so the app falls back to defaults.
+      settings.window.valid = settings.window.width > 0 && settings.window.height > 0;
+    }
   }
   yyjson_doc_free(doc);
   settings.font_size = std::clamp(settings.font_size, 7, 40);
@@ -80,6 +93,15 @@ bool save_settings(const Settings& settings) {
   yyjson_mut_obj_add_bool(doc, root, "indentWithTabs", settings.indent_with_tabs);
   yyjson_mut_obj_add_uint(doc, root, "largeFileThreshold", settings.large_file_threshold);
   yyjson_mut_obj_add_str(doc, root, "fallbackEncoding", settings.fallback_encoding.c_str());
+  if (settings.window.valid) {
+    yyjson_mut_val* window = yyjson_mut_obj(doc);
+    yyjson_mut_obj_add_int(doc, window, "x", settings.window.x);
+    yyjson_mut_obj_add_int(doc, window, "y", settings.window.y);
+    yyjson_mut_obj_add_int(doc, window, "width", settings.window.width);
+    yyjson_mut_obj_add_int(doc, window, "height", settings.window.height);
+    yyjson_mut_obj_add_bool(doc, window, "maximized", settings.window.maximized);
+    yyjson_mut_obj_add_val(doc, root, "window", window);
+  }
   std::size_t length = 0;
   char* json = yyjson_mut_write(doc, YYJSON_WRITE_PRETTY | YYJSON_WRITE_NEWLINE_AT_END, &length);
   bool ok = false;

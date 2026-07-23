@@ -78,8 +78,14 @@
       <Files Include="$(var.StageDir)\licenses\*.txt" />
     </ComponentGroup>
 
-    <Component Id="ClassicContextMenu" Directory="INSTALLFOLDER" Bitness="always64"
-               Condition="LISTOPAD_REGISTER_SPARSE &lt;&gt; &quot;1&quot;">
+    <!-- Registered unconditionally, including alongside the sparse package. The
+         modern menu is a Windows 11 surface, and it is not always the one the
+         user sees: restoring the classic menu hides every packaged verb, and
+         registering the package fails outright when its certificate is not
+         trusted. Without this entry those users get no command at all. On
+         Windows 11 the two do not collide — the packaged verb appears at the top
+         level, this one under "Show more options". -->
+    <Component Id="ClassicContextMenu" Directory="INSTALLFOLDER" Bitness="always64">
       <RegistryKey Root="HKLM" Key="Software\Classes\*\shell\ListopadPP">
         <RegistryValue Name="MUIVerb" Type="string"
                        Value="@[INSTALLFOLDER]ListopadShell.dll,-101" />

@@ -65,6 +65,15 @@ class EditorWindow final {
   void prepare_menu_bar(HMENU menu);
   void apply_window_theme();
   void recreate_theme_brushes();
+  void persist_window_bounds();
+  void create_toolbar();
+  void load_icon_font();
+  int toolbar_height() const;
+  LRESULT draw_toolbar(NMTBCUSTOMDRAW& custom);
+  void draw_toolbar_glyph(HDC dc, int command, RECT button, bool disabled);
+  void toolbar_tooltip(NMTTDISPINFOW& info) const;
+  void paint_menu_underline();
+  std::wstring fit_tab_title(std::wstring title) const;
 
   Tab* active_tab();
   const Tab* active_tab() const;
@@ -101,6 +110,7 @@ class EditorWindow final {
   HINSTANCE instance_{};
   Settings settings_;
   HWND window_{nullptr};
+  HWND toolbar_{nullptr};
   HWND tabs_{nullptr};
   HWND status_{nullptr};
   HWND banner_{nullptr};
@@ -119,6 +129,11 @@ class EditorWindow final {
   HWND wrap_check_{nullptr};
   HWND selection_only_check_{nullptr};
   HFONT editor_font_{nullptr};
+  HFONT tab_font_{nullptr};
+  HFONT icon_font_{nullptr};
+  HANDLE icon_font_resource_{nullptr};
+  HIMAGELIST toolbar_images_{nullptr};
+  int dpi_{96};
   HBRUSH window_brush_{nullptr};
   HBRUSH panel_brush_{nullptr};
   HBRUSH field_brush_{nullptr};
