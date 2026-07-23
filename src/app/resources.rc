@@ -2,6 +2,10 @@
 #include "resource.h"
 #include "listopad/version.h"
 
+// Subset of the Phosphor icon font (MIT, see assets/Phosphor-LICENSE.txt),
+// trimmed to just the toolbar glyphs and loaded privately at runtime.
+IDR_PHOSPHOR_FONT RCDATA "assets/Phosphor-Subset.ttf"
+
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION LISTOPAD_VERSION_MAJOR,LISTOPAD_VERSION_MINOR,LISTOPAD_VERSION_PATCH,0
  PRODUCTVERSION LISTOPAD_VERSION_MAJOR,LISTOPAD_VERSION_MINOR,LISTOPAD_VERSION_PATCH,0

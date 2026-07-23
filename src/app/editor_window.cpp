@@ -41,6 +41,40 @@ namespace {
 constexpr wchar_t kWindowClass[] = L"ListopadPPMainWindow";
 constexpr UINT kLanguageFirst = 3000;
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
+constexpr int kMinWindowWidth = 480;
+constexpr int kMinWindowHeight = 320;
+
+// Turn a persisted window rectangle into one guaranteed to land on a currently
+// connected monitor. This is the safeguard against a saved position that has
+// since drifted off-screen — e.g. the window was on an external monitor that is
+// no longer attached, or the display arrangement/resolution changed. Returns
+// false when nothing sensible can be recovered so the caller uses its defaults.
+bool resolve_visible_bounds(const listopad::WindowBounds& saved, RECT& out) {
+  if (!saved.valid) return false;
+
+  int width = std::max(saved.width, kMinWindowWidth);
+  int height = std::max(saved.height, kMinWindowHeight);
+  RECT rect{saved.x, saved.y, saved.x + width, saved.y + height};
+
+  // Pick the monitor the saved rectangle overlaps most; NULL means it lies fully
+  // outside every monitor, which is exactly the off-screen case we guard against.
+  HMONITOR monitor = MonitorFromRect(&rect, MONITOR_DEFAULTTONULL);
+  if (!monitor) return false;
+
+  MONITORINFO info{sizeof(info)};
+  if (!GetMonitorInfoW(monitor, &info)) return false;
+  const RECT work = info.rcWork;
+
+  // Never let the window exceed the monitor's usable area, then slide it fully
+  // inside that area so the title bar always stays grabbable.
+  width = std::min<int>(width, work.right - work.left);
+  height = std::min<int>(height, work.bottom - work.top);
+  int x = std::clamp<int>(saved.x, work.left, work.right - width);
+  int y = std::clamp<int>(saved.y, work.top, work.bottom - height);
+
+  out = RECT{x, y, x + width, y + height};
+  return true;
+}
 
 enum class PreferredAppMode : int {
   Default,
@@ -153,6 +187,10 @@ EditorWindow::~EditorWindow() {
   search_thread_.request_stop();
   watcher_.clear(); elevated_.close();
   if (editor_font_) DeleteObject(editor_font_);
+  if (tab_font_) DeleteObject(tab_font_);
+  if (icon_font_) DeleteObject(icon_font_);
+  if (icon_font_resource_) RemoveFontMemResourceEx(icon_font_resource_);
+  if (toolbar_images_) ImageList_Destroy(toolbar_images_);
   if (window_brush_) DeleteObject(window_brush_);
   if (panel_brush_) DeleteObject(panel_brush_);
   if (field_brush_) DeleteObject(field_brush_);
@@ -184,12 +222,55 @@ bool EditorWindow::create(const int show_command) {
   if (!type.hIconSm) type.hIconSm = type.hIcon;
   type.hbrBackground = nullptr;
   if (!RegisterClassExW(&type) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+
+  int x = CW_USEDEFAULT, y = CW_USEDEFAULT, width = 1100, height = 760;
+  if (RECT bounds{}; resolve_visible_bounds(settings_.window, bounds)) {
+    x = bounds.left; y = bounds.top;
+    width = bounds.right - bounds.left; height = bounds.bottom - bounds.top;
+  }
+  // Honour the maximized state even when the stored normal rectangle was rejected
+  // as off-screen: the window then maximizes on the default monitor and its
+  // un-maximize size falls back to the created default rather than being lost.
+  const bool restore_maximized = settings_.window.valid && settings_.window.maximized;
   window_ = CreateWindowExW(0, kWindowClass, LISTOPAD_PRODUCT_NAME,
                             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-                            CW_USEDEFAULT, CW_USEDEFAULT, 1100, 760,
+                            x, y, width, height,
                             nullptr, nullptr, instance_, this);
   if (!window_) return false;
-  ShowWindow(window_, show_command); UpdateWindow(window_); return true;
+  // Created at the validated restore rectangle, so maximizing here still leaves
+  // that rectangle as the "normal" size to return to when the user un-maximizes.
+  ShowWindow(window_, restore_maximized ? SW_SHOWMAXIMIZED : show_command);
+  // The first ShowWindow after process start can be overridden by the launcher's
+  // STARTUPINFO (Explorer and Start-Process force SW_SHOWNORMAL), which silently
+  // drops the restored maximized state. A second call is exempt from that rule.
+  if (restore_maximized) ShowWindow(window_, SW_SHOWMAXIMIZED);
+  UpdateWindow(window_); return true;
+}
+
+void EditorWindow::persist_window_bounds() {
+  if (!window_) return;
+  WINDOWPLACEMENT placement{sizeof(placement)};
+  if (!GetWindowPlacement(window_, &placement)) return;
+  const bool maximized =
+      placement.showCmd == SW_SHOWMAXIMIZED ||
+      (placement.showCmd == SW_SHOWMINIMIZED && (placement.flags & WPF_RESTORETOMAXIMIZED));
+  // For a maximized or minimized window rcNormalPosition is the right thing to
+  // keep — the size to return to on un-maximize — while the live frame would be
+  // the full-screen or an off-screen rectangle. For an ordinary window it matches
+  // the frame; for an Aero-snapped one (half the screen), rcNormalPosition still
+  // holds the pre-snap size, so only GetWindowRect captures where the window
+  // actually sits and lets it reopen snapped to the same edge.
+  RECT rect = placement.rcNormalPosition;
+  if (placement.showCmd != SW_SHOWMAXIMIZED && placement.showCmd != SW_SHOWMINIMIZED) {
+    if (RECT frame{}; GetWindowRect(window_, &frame)) rect = frame;
+  }
+  settings_.window.valid = true;
+  settings_.window.maximized = maximized;
+  settings_.window.x = rect.left;
+  settings_.window.y = rect.top;
+  settings_.window.width = rect.right - rect.left;
+  settings_.window.height = rect.bottom - rect.top;
+  save_settings(settings_);
 }
 
 LRESULT CALLBACK EditorWindow::window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -207,7 +288,25 @@ LRESULT EditorWindow::dispatch(const UINT message, const WPARAM wparam, const LP
     case WM_CREATE: return on_create() ? 0 : -1;
     case WM_SIZE: on_size(); return 0;
     case WM_COMMAND: on_command(LOWORD(wparam), HIWORD(wparam), reinterpret_cast<HWND>(lparam)); return 0;
-    case WM_NOTIFY: on_notify(*reinterpret_cast<NMHDR*>(lparam)); return 0;
+    case WM_NOTIFY: {
+      auto& header = *reinterpret_cast<NMHDR*>(lparam);
+      if (header.hwndFrom == toolbar_ && header.code == NM_CUSTOMDRAW)
+        return draw_toolbar(*reinterpret_cast<NMTBCUSTOMDRAW*>(lparam));
+      if (header.code == TTN_GETDISPINFOW) {
+        toolbar_tooltip(*reinterpret_cast<NMTTDISPINFOW*>(lparam));
+        return 0;
+      }
+      on_notify(header);
+      return 0;
+    }
+    case WM_NCACTIVATE:
+    case WM_NCPAINT: {
+      const LRESULT result = DefWindowProcW(window_, message, wparam, lparam);
+      // The default frame leaves a light 1px seam under the menu bar in dark
+      // mode; repaint it with the menu background so the bar blends into it.
+      paint_menu_underline();
+      return result;
+    }
     case WM_MEASUREITEM: {
       auto* item = reinterpret_cast<MEASUREITEMSTRUCT*>(lparam);
       if (!item || item->CtlType != ODT_MENU || item->itemData == 0)
@@ -332,7 +431,14 @@ LRESULT EditorWindow::dispatch(const UINT message, const WPARAM wparam, const LP
       return 0;
     case WM_CLOSE:
       for (int index = static_cast<int>(documents_.size()) - 1; index >= 0; --index) if (!confirm_close(documents_[index])) return 0;
+      persist_window_bounds();
       DestroyWindow(window_); return 0;
+    case WM_ENDSESSION:
+      // Windows is shutting down or the user is logging off, so WM_CLOSE may
+      // never arrive — capture the geometry here too. wparam is TRUE only when
+      // the session is actually ending (a cancelled shutdown sends FALSE).
+      if (wparam) persist_window_bounds();
+      return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     default: return DefWindowProcW(window_, message, wparam, lparam);
   }
@@ -383,15 +489,229 @@ bool EditorWindow::on_create() {
   HDC window_dc = GetDC(window_);
   const int logical_dpi = window_dc ? GetDeviceCaps(window_dc, LOGPIXELSY) : 96;
   if (window_dc) ReleaseDC(window_, window_dc);
+  dpi_ = logical_dpi;
+  create_toolbar();
+  // Tabs shrink to their label (capped in fit_tab_title) instead of filling a
+  // fixed minimum, with a little breathing room top and bottom.
   SendMessageW(tabs_, TCM_SETPADDING, 0,
-               MAKELPARAM(MulDiv(18, logical_dpi, 96), MulDiv(4, logical_dpi, 96)));
-  SendMessageW(tabs_, TCM_SETMINTABWIDTH, 0, MulDiv(260, logical_dpi, 96));
+               MAKELPARAM(MulDiv(20, logical_dpi, 96), MulDiv(7, logical_dpi, 96)));
+  SendMessageW(tabs_, TCM_SETMINTABWIDTH, 0, MulDiv(70, logical_dpi, 96));
+  // A proportional UI font for the tab strip reads better than the default
+  // fixed shell font; the tab control uses it to size and lay out each tab.
+  tab_font_ = CreateFontW(-MulDiv(9, logical_dpi, 72), 0, 0, 0, FW_NORMAL, FALSE,
+                          FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                          CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                          VARIABLE_PITCH | FF_SWISS, L"Segoe UI");
+  SendMessageW(tabs_, WM_SETFONT, reinterpret_cast<WPARAM>(tab_font_), TRUE);
   editor_font_ = CreateFontW(-MulDiv(settings_.font_size, logical_dpi, 72),
                              0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                              OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                              FIXED_PITCH | FF_MODERN, utf8_to_wide(settings_.font_face).c_str());
   apply_window_theme();
   add_empty_tab(); update_layout(); return true;
+}
+
+void EditorWindow::load_icon_font() {
+  // Load the bundled Phosphor subset into the process's private font table so
+  // the toolbar can render its glyphs by name; recolouring is just SetTextColor.
+  const HRSRC resource = FindResourceW(instance_, MAKEINTRESOURCEW(IDR_PHOSPHOR_FONT), RT_RCDATA);
+  if (!resource) return;
+  const HGLOBAL loaded = LoadResource(instance_, resource);
+  void* data = loaded ? LockResource(loaded) : nullptr;
+  const DWORD size = SizeofResource(instance_, resource);
+  if (!data || size == 0) return;
+  DWORD fonts = 0;
+  icon_font_resource_ = AddFontMemResourceEx(data, size, nullptr, &fonts);
+  if (!icon_font_resource_) return;
+  icon_font_ = CreateFontW(-MulDiv(17, dpi_, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE,
+                           FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                           CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                           DEFAULT_PITCH | FF_DONTCARE, L"ListopadPhosphor");
+}
+
+void EditorWindow::create_toolbar() {
+  load_icon_font();
+  toolbar_ = CreateWindowExW(
+      0, TOOLBARCLASSNAMEW, L"",
+      WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TBSTYLE_FLAT | TBSTYLE_TOOLTIPS |
+          CCS_NODIVIDER | CCS_NORESIZE | CCS_NOPARENTALIGN,
+      0, 0, 0, 0, window_, reinterpret_cast<HMENU>(IDC_TOOLBAR), instance_, nullptr);
+  if (!toolbar_) return;
+  SendMessageW(toolbar_, TB_BUTTONSTRUCTSIZE, sizeof(TBBUTTON), 0);
+  // A blank image list of the desired glyph size reserves each button's width;
+  // the glyphs themselves are painted from scratch in draw_toolbar().
+  const int icon = MulDiv(16, dpi_, 96);
+  toolbar_images_ = ImageList_Create(icon, icon, ILC_COLOR32, 1, 0);
+  ImageList_SetImageCount(toolbar_images_, 1);
+  SendMessageW(toolbar_, TB_SETIMAGELIST, 0, reinterpret_cast<LPARAM>(toolbar_images_));
+  SendMessageW(toolbar_, TB_SETPADDING, 0,
+               MAKELPARAM(MulDiv(11, dpi_, 96), MulDiv(9, dpi_, 96)));
+  const auto button = [](int command) {
+    TBBUTTON entry{};
+    entry.iBitmap = 0;
+    entry.idCommand = command;
+    entry.fsState = TBSTATE_ENABLED;
+    entry.fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE;
+    return entry;
+  };
+  const auto separator = []() {
+    TBBUTTON entry{};
+    entry.fsStyle = BTNS_SEP;
+    return entry;
+  };
+  std::array<TBBUTTON, 13> buttons{
+      button(IDM_FILE_NEW),   button(IDM_FILE_OPEN),  button(IDM_FILE_SAVE),
+      separator(),            button(IDM_EDIT_UNDO),  button(IDM_EDIT_REDO),
+      separator(),            button(IDM_EDIT_CUT),   button(IDM_EDIT_COPY),
+      button(IDM_EDIT_PASTE), separator(),            button(IDM_SEARCH_FIND),
+      button(IDM_SEARCH_REPLACE)};
+  SendMessageW(toolbar_, TB_ADDBUTTONSW, buttons.size(),
+               reinterpret_cast<LPARAM>(buttons.data()));
+  SendMessageW(toolbar_, TB_AUTOSIZE, 0, 0);
+}
+
+int EditorWindow::toolbar_height() const {
+  if (!toolbar_ || !IsWindowVisible(toolbar_)) return 0;
+  SIZE size{};
+  if (SendMessageW(toolbar_, TB_GETMAXSIZE, 0, reinterpret_cast<LPARAM>(&size)) &&
+      size.cy > 0)
+    return size.cy + MulDiv(6, dpi_, 96);
+  return MulDiv(34, dpi_, 96);
+}
+
+LRESULT EditorWindow::draw_toolbar(NMTBCUSTOMDRAW& custom) {
+  NMCUSTOMDRAW& base = custom.nmcd;
+  const COLORREF bar = dark_ ? RGB(45, 45, 48) : GetSysColor(COLOR_BTNFACE);
+  switch (base.dwDrawStage) {
+    case CDDS_PREPAINT:
+      SetDCBrushColor(base.hdc, bar);
+      FillRect(base.hdc, &base.rc, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+      return CDRF_NOTIFYITEMDRAW;
+    case CDDS_ITEMPREPAINT: {
+      const int command = static_cast<int>(base.dwItemSpec);
+      RECT rc = base.rc;
+      if (command == 0) {  // separator
+        const int x = (rc.left + rc.right) / 2;
+        RECT line{x, rc.top + MulDiv(5, dpi_, 96), x + (std::max)(1, MulDiv(1, dpi_, 96)),
+                  rc.bottom - MulDiv(5, dpi_, 96)};
+        SetDCBrushColor(base.hdc, dark_ ? RGB(70, 70, 74) : RGB(200, 200, 200));
+        FillRect(base.hdc, &line, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+        return CDRF_SKIPDEFAULT;
+      }
+      const bool disabled = (base.uItemState & CDIS_DISABLED) != 0;
+      const bool pressed = (base.uItemState & (CDIS_SELECTED | CDIS_CHECKED)) != 0;
+      const bool hot = (base.uItemState & CDIS_HOT) != 0;
+      SetDCBrushColor(base.hdc, bar);
+      FillRect(base.hdc, &rc, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+      if (!disabled && (hot || pressed)) {
+        SetDCBrushColor(base.hdc,
+                        dark_ ? (pressed ? RGB(62, 62, 66) : RGB(55, 55, 58))
+                              : (pressed ? RGB(208, 208, 208) : RGB(226, 226, 226)));
+        RECT highlight = rc;
+        InflateRect(&highlight, -MulDiv(2, dpi_, 96), -MulDiv(2, dpi_, 96));
+        FillRect(base.hdc, &highlight, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+      }
+      draw_toolbar_glyph(base.hdc, command, rc, disabled);
+      return CDRF_SKIPDEFAULT;
+    }
+    default:
+      return CDRF_DODEFAULT;
+  }
+}
+
+void EditorWindow::draw_toolbar_glyph(HDC dc, int command, RECT button, bool disabled) {
+  if (!icon_font_) return;
+  // Phosphor glyph codepoints (Private Use Area) for each toolbar action.
+  wchar_t glyph = 0;
+  switch (command) {
+    case IDM_FILE_NEW: glyph = 0xE230; break;        // file
+    case IDM_FILE_OPEN: glyph = 0xE256; break;       // folder-open
+    case IDM_FILE_SAVE: glyph = 0xE248; break;       // floppy-disk
+    case IDM_EDIT_UNDO: glyph = 0xE038; break;       // arrow-counter-clockwise
+    case IDM_EDIT_REDO: glyph = 0xE036; break;       // arrow-clockwise
+    case IDM_EDIT_CUT: glyph = 0xEAE0; break;         // scissors
+    case IDM_EDIT_COPY: glyph = 0xE1CA; break;        // copy
+    case IDM_EDIT_PASTE: glyph = 0xE196; break;       // clipboard
+    case IDM_SEARCH_FIND: glyph = 0xE30C; break;      // magnifying-glass
+    case IDM_SEARCH_REPLACE: glyph = 0xE83C; break;   // swap
+    default: return;
+  }
+  const COLORREF ink = disabled ? (dark_ ? RGB(105, 105, 108) : RGB(170, 170, 170))
+                                 : (dark_ ? RGB(226, 226, 228) : RGB(70, 70, 74));
+  const HGDIOBJ previous_font = SelectObject(dc, icon_font_);
+  const int previous_mode = SetBkMode(dc, TRANSPARENT);
+  const COLORREF previous_text = SetTextColor(dc, ink);
+  DrawTextW(dc, &glyph, 1, &button,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_NOCLIP);
+  SetTextColor(dc, previous_text);
+  SetBkMode(dc, previous_mode);
+  SelectObject(dc, previous_font);
+}
+
+void EditorWindow::toolbar_tooltip(NMTTDISPINFOW& info) const {
+  const wchar_t* text = nullptr;
+  switch (static_cast<int>(info.hdr.idFrom)) {
+    case IDM_FILE_NEW: text = tr(L"Новый (Ctrl+N)", L"New (Ctrl+N)"); break;
+    case IDM_FILE_OPEN: text = tr(L"Открыть (Ctrl+O)", L"Open (Ctrl+O)"); break;
+    case IDM_FILE_SAVE: text = tr(L"Сохранить (Ctrl+S)", L"Save (Ctrl+S)"); break;
+    case IDM_EDIT_UNDO: text = tr(L"Отменить (Ctrl+Z)", L"Undo (Ctrl+Z)"); break;
+    case IDM_EDIT_REDO: text = tr(L"Повторить (Ctrl+Y)", L"Redo (Ctrl+Y)"); break;
+    case IDM_EDIT_CUT: text = tr(L"Вырезать (Ctrl+X)", L"Cut (Ctrl+X)"); break;
+    case IDM_EDIT_COPY: text = tr(L"Копировать (Ctrl+C)", L"Copy (Ctrl+C)"); break;
+    case IDM_EDIT_PASTE: text = tr(L"Вставить (Ctrl+V)", L"Paste (Ctrl+V)"); break;
+    case IDM_SEARCH_FIND: text = tr(L"Найти (Ctrl+F)", L"Find (Ctrl+F)"); break;
+    case IDM_SEARCH_REPLACE: text = tr(L"Заменить (Ctrl+H)", L"Replace (Ctrl+H)"); break;
+    default: break;
+  }
+  if (text) {
+    wcsncpy_s(info.szText, text, _TRUNCATE);
+    info.lpszText = info.szText;
+  }
+}
+
+void EditorWindow::paint_menu_underline() {
+  if (!dark_ || !GetMenu(window_)) return;
+  MENUBARINFO bar{sizeof(bar)};
+  if (!GetMenuBarInfo(window_, OBJID_MENU, 0, &bar)) return;
+  RECT frame{};
+  GetWindowRect(window_, &frame);
+  RECT line = bar.rcBar;
+  OffsetRect(&line, -frame.left, -frame.top);
+  line.top = line.bottom - MulDiv(1, dpi_, 96);
+  line.bottom += MulDiv(2, dpi_, 96);
+  HDC dc = GetWindowDC(window_);
+  if (!dc) return;
+  SetDCBrushColor(dc, RGB(37, 37, 38));
+  FillRect(dc, &line, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+  ReleaseDC(window_, dc);
+}
+
+std::wstring EditorWindow::fit_tab_title(std::wstring title) const {
+  if (!tabs_ || !tab_font_ || title.empty()) return title;
+  HDC dc = GetDC(tabs_);
+  if (!dc) return title;
+  const HGDIOBJ previous = SelectObject(dc, tab_font_);
+  const int max_px = MulDiv(220, dpi_, 96);  // 260 cap minus the tab's horizontal padding
+  SIZE size{};
+  GetTextExtentPoint32W(dc, title.c_str(), static_cast<int>(title.size()), &size);
+  if (size.cx > max_px && title.size() > 1) {
+    const std::wstring ellipsis = L"…";
+    int low = 0;
+    int high = static_cast<int>(title.size());
+    while (low < high) {
+      const int mid = (low + high + 1) / 2;
+      const std::wstring candidate = title.substr(0, mid) + ellipsis;
+      GetTextExtentPoint32W(dc, candidate.c_str(), static_cast<int>(candidate.size()), &size);
+      if (size.cx <= max_px)
+        low = mid;
+      else
+        high = mid - 1;
+    }
+    title = title.substr(0, low) + ellipsis;
+  }
+  SelectObject(dc, previous);
+  ReleaseDC(tabs_, dc);
+  return title;
 }
 
 void EditorWindow::recreate_theme_brushes() {
@@ -416,9 +736,10 @@ void EditorWindow::apply_window_theme() {
   SetWindowTheme(window_, dark_ ? L"DarkMode_Explorer" : nullptr, nullptr);
 
   const std::array controls{
-      tabs_, status_, banner_, reload_button_, keep_button_, search_panel_, find_text_,
-      replace_text_, find_button_, replace_button_, replace_all_button_, regex_check_,
-      case_check_, all_tabs_check_, whole_word_check_, wrap_check_, selection_only_check_};
+      toolbar_, tabs_, status_, banner_, reload_button_, keep_button_, search_panel_,
+      find_text_, replace_text_, find_button_, replace_button_, replace_all_button_,
+      regex_check_, case_check_, all_tabs_check_, whole_word_check_, wrap_check_,
+      selection_only_check_};
   for (const HWND control : controls) {
     if (!control) continue;
     if (api.allow_dark_mode_for_window) api.allow_dark_mode_for_window(control, enabled);
@@ -592,12 +913,15 @@ void EditorWindow::update_layout() {
   const bool search_visible = IsWindowVisible(search_panel_) != FALSE;
   const bool replace_visible = IsWindowVisible(replace_text_) != FALSE;
   const int banner_height = banner_visible ? 36 : 0;
+  const int bar_height = toolbar_height();
+  const int top_offset = bar_height + banner_height;
   const int search_height = search_visible ? (replace_visible ? 112 : 78) : 0;
-  MoveWindow(tabs_, 0, banner_height, client.right, client.bottom - status_height - banner_height - search_height, TRUE);
-  RECT content{0, 0, client.right, client.bottom - status_height - banner_height - search_height};
+  if (toolbar_) MoveWindow(toolbar_, 0, 0, client.right, bar_height, TRUE);
+  MoveWindow(tabs_, 0, top_offset, client.right, client.bottom - status_height - top_offset - search_height, TRUE);
+  RECT content{0, 0, client.right, client.bottom - status_height - top_offset - search_height};
   TabCtrl_AdjustRect(tabs_, FALSE, &content);
   for (auto& tab : documents_) {
-    MoveWindow(tab.view, content.left, content.top + banner_height,
+    MoveWindow(tab.view, content.left, content.top + top_offset,
                content.right - content.left, content.bottom - content.top, TRUE);
   }
   if (Tab* tab = active_tab(); tab && tab->view) {
@@ -605,10 +929,10 @@ void EditorWindow::update_layout() {
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
   }
   if (banner_visible) {
-    SetWindowPos(banner_, HWND_BOTTOM, 0, 0, client.right, 36, SWP_NOACTIVATE);
-    SetWindowPos(reload_button_, HWND_TOP, client.right - 260, 5, 120, 26,
+    SetWindowPos(banner_, HWND_BOTTOM, 0, bar_height, client.right, 36, SWP_NOACTIVATE);
+    SetWindowPos(reload_button_, HWND_TOP, client.right - 260, bar_height + 5, 120, 26,
                  SWP_NOACTIVATE);
-    SetWindowPos(keep_button_, HWND_TOP, client.right - 132, 5, 120, 26,
+    SetWindowPos(keep_button_, HWND_TOP, client.right - 132, bar_height + 5, 120, 26,
                  SWP_NOACTIVATE);
   }
   if (search_visible) {
@@ -698,8 +1022,9 @@ LRESULT CALLBACK EditorWindow::tabs_subclass(HWND window, const UINT message,
       SetDCBrushColor(dc, item_background);
       FillRect(dc, &item_rect, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
       if (active) {
-        RECT accent{item_rect.left, item_rect.top, item_rect.right, item_rect.top + 2};
-        SetDCBrushColor(dc, RGB(0, 122, 204));
+        RECT accent{item_rect.left, item_rect.top, item_rect.right,
+                    item_rect.top + MulDiv(3, self->dpi_, 96)};
+        SetDCBrushColor(dc, RGB(254, 138, 0));  // the leaf orange from the logo
         FillRect(dc, &accent, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
       }
       SetTextColor(dc, self->dark_
@@ -1118,7 +1443,13 @@ void EditorWindow::open_request(const ipc::OpenFilesRequest& request) {
     if (request.column > 0) position += static_cast<sptr_t>(request.column - 1);
     sci(tab->view, SCI_GOTOPOS, position);
   }
-  ShowWindow(window_, SW_RESTORE); SetForegroundWindow(window_);
+  // Only un-minimize; an unconditional SW_RESTORE would also drop a maximized
+  // window back to normal, which wrecks the restored-on-launch maximized state
+  // (this runs on every startup, not just on a second instance's open request).
+  // SW_RESTORE on a minimized window returns it to whichever state — maximized or
+  // normal — it held before being minimized.
+  if (IsIconic(window_)) ShowWindow(window_, SW_RESTORE);
+  SetForegroundWindow(window_);
 }
 
 bool EditorWindow::save_tab(Tab& tab, bool save_as) {
@@ -1635,6 +1966,7 @@ void EditorWindow::update_ui() {
     std::wstring title = documents_[index].document.title;
     if (documents_[index].document.dirty) title += L" *";
     if (documents_[index].document.external_diverged) title += L" !";
+    title = fit_tab_title(std::move(title));
     TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = title.data(); TabCtrl_SetItem(tabs_, index, &item);
   }
   const bool show_external_notice = tab->external_notice_pending;

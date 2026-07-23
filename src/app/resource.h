@@ -1,6 +1,7 @@
 #pragma once
 
 #define IDI_LISTOPAD 101
+#define IDR_PHOSPHOR_FONT 201
 
 #define IDM_FILE_NEW 1001
 #define IDM_FILE_OPEN 1002
@@ -47,3 +48,4 @@
 #define IDC_WHOLE_WORD 2016
 #define IDC_WRAP 2017
 #define IDC_SELECTION_ONLY 2018
+#define IDC_TOOLBAR 2019
