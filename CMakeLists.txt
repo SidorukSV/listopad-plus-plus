@@ -51,6 +51,7 @@ add_library(listopad_core STATIC
   src/core/encoding.cpp
   src/core/file_io.cpp
   src/core/formatter.cpp
+  src/core/hex_view.cpp
   src/core/ipc_protocol.cpp
   src/core/language.cpp
   src/core/search.cpp
@@ -73,9 +74,11 @@ target_link_libraries(listopad_core PUBLIC
 
 add_executable(ListopadPP WIN32
   src/app/app.cpp
+  src/app/document_map.cpp
   src/app/editor_window.cpp
   src/app/elevated_client.cpp
   src/app/file_watcher.cpp
+  src/app/hex_view_window.cpp
   src/app/large_file_view.cpp
   src/app/single_instance.cpp
   src/app/resources.rc
@@ -86,7 +89,7 @@ target_compile_definitions(ListopadPP PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LE
 target_compile_options(ListopadPP PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(ListopadPP PRIVATE
   listopad_core listopad_scintilla listopad_lexilla
-  comctl32 comdlg32 dwmapi ole32 shell32 shlwapi uxtheme version wintrust)
+  comctl32 comdlg32 dwmapi msimg32 ole32 shell32 shlwapi uxtheme version wintrust)
 set_target_properties(ListopadPP PROPERTIES OUTPUT_NAME "ListopadPP")
 
 add_executable(ListopadElevated WIN32
@@ -128,6 +131,7 @@ if(LISTOPAD_BUILD_TESTS)
     tests/encoding_tests.cpp
     tests/file_io_tests.cpp
     tests/formatter_tests.cpp
+    tests/hex_view_tests.cpp
     tests/ipc_tests.cpp
     tests/language_tests.cpp
     tests/lexer_tests.cpp

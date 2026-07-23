@@ -11,7 +11,9 @@ ListopadPP.exe (unelevated, one process per user)
   ├─ ReadDirectoryChangesW watchers
   ├─ cancellable PCRE2 workers
   ├─ lazy QuickJS-NG + fixed Emmet bundle
-  └─ memory-mapped LargeFileView
+  ├─ shared-document Scintilla DocumentMap
+  ├─ memory-mapped LargeFileView
+  └─ memory-mapped HexViewWindow
         │ authenticated SaveRequest, only after ACCESS_DENIED
         ▼
 ListopadElevated.exe (session broker, minimal command set)
@@ -25,10 +27,20 @@ formatters, Emmet and settings. It contains no editor window.
 enumerates selected `IShellItem` paths and starts `ListopadPP.exe`; no editor,
 lexer, parser or JS runtime is loaded into Explorer.
 
-Large files use a read-only file mapping and paint only visible lines in a
-custom child window. Search runs against the mapping on a cancellable worker.
-Editing, syntax highlighting, replacement, formatting and Emmet are disabled in
-this mode.
+Each tab has one active `ViewKind`: editable Scintilla text, read-only
+`LargeFileView`, or read-only `HexViewWindow`. Large text and hex views use a
+file mapping and paint only visible rows. Their searches run against the mapping
+on cancellable workers. Editing, replacement, formatting and Emmet are disabled
+in these modes.
+
+Editable tabs may also own a narrow Scintilla `DocumentMap`. It shares the
+editor document and styled bytes but owns its visual styles and scrolling. The
+map never marks the shared document read-only; its subclass rejects input and
+uses mouse gestures only for navigation.
+
+Built-in language metadata is the single source for extension detection,
+Save As filters, and the canonical extension appended to a new file. Raw
+Lexilla lexers without metadata remain available, but do not guess a suffix.
 
 Normal saves are optimistic transactions guarded by a strong fingerprint
 (volume serial, 128-bit file ID, length and last-write time). External directory
