@@ -134,11 +134,6 @@ LRESULT sci(HWND editor, UINT message, WPARAM wparam = 0, LPARAM lparam = 0) {
   return SendMessageW(editor, message, wparam, lparam);
 }
 
-bool has_visible_style(const HWND window) {
-  return window &&
-         (GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE) != 0;
-}
-
 std::string control_text_utf8(HWND control) {
   const int length = GetWindowTextLengthW(control);
   std::wstring text(static_cast<std::size_t>(length), L'\0');
@@ -163,25 +158,6 @@ std::wstring eol_name(const EolMode mode) {
   }
 }
 
-enum class SearchJobKind { Find, FindAll, ReplaceAll };
-
-struct SearchTabResult {
-  int index{-1};
-  std::size_t base{0};
-  std::size_t caret{0};
-  std::string original;
-  std::string subject;
-  SearchResult found;
-  ReplaceResult replaced;
-};
-
-struct SearchJobResult {
-  SearchJobKind kind{SearchJobKind::Find};
-  std::uint64_t generation{0};
-  bool wrap{true};
-  std::vector<SearchTabResult> tabs;
-};
-
 }  // namespace
 
 EditorWindow::EditorWindow(HINSTANCE instance, Settings settings)
@@ -193,8 +169,48 @@ EditorWindow::EditorWindow(HINSTANCE instance, Settings settings)
   dark_ = settings_.theme == "dark" || (settings_.theme == "system" && system_dark_theme());
 }
 
+EditorWindow::DocumentMutationScope::DocumentMutationScope(
+    EditorWindow& owner, Tab& tab, const DocumentMutationOrigin origin)
+    : owner_(owner),
+      tab_(tab),
+      origin_(origin),
+      policy_(mutation_policy(origin)),
+      previous_tab_(owner.active_mutation_tab_),
+      previous_origin_(owner.active_mutation_origin_) {
+  owner_.active_mutation_tab_ = &tab_;
+  owner_.active_mutation_origin_ = origin_;
+  switch (policy_.undo) {
+    case UndoPolicy::Preserve:
+      break;
+    case UndoPolicy::RecordSingleAction:
+      sci(tab_.view, SCI_BEGINUNDOACTION);
+      break;
+    case UndoPolicy::ResetBaseline:
+      sci(tab_.view, SCI_SETUNDOCOLLECTION, FALSE);
+      break;
+  }
+}
+
+EditorWindow::DocumentMutationScope::~DocumentMutationScope() {
+  switch (policy_.undo) {
+    case UndoPolicy::Preserve:
+      break;
+    case UndoPolicy::RecordSingleAction:
+      sci(tab_.view, SCI_ENDUNDOACTION);
+      break;
+    case UndoPolicy::ResetBaseline:
+      sci(tab_.view, SCI_SETUNDOCOLLECTION, TRUE);
+      sci(tab_.view, SCI_EMPTYUNDOBUFFER);
+      break;
+  }
+  if (policy_.set_save_point) sci(tab_.view, SCI_SETSAVEPOINT);
+  owner_.active_mutation_tab_ = previous_tab_;
+  owner_.active_mutation_origin_ = previous_origin_;
+  owner_.finish_document_mutation(tab_, origin_);
+}
+
 EditorWindow::~EditorWindow() {
-  search_thread_.request_stop();
+  search_.cancel();
   watcher_.clear(); elevated_.close();
   if (editor_font_) DeleteObject(editor_font_);
   if (tab_font_) DeleteObject(tab_font_);
@@ -421,8 +437,24 @@ LRESULT EditorWindow::dispatch(const UINT message, const WPARAM wparam, const LP
     case kSearchResultMessage:
       handle_search_result(reinterpret_cast<void*>(lparam));
       return 0;
+    case kGuiSmokeCommandMessage:
+      if (GetEnvironmentVariableW(L"LISTOPAD_GUI_SMOKE", nullptr, 0) > 0) {
+        if (wparam == IDM_SEARCH_NEXT || wparam == IDC_FIND_NEXT ||
+            wparam == IDC_FIND_ALL) {
+          std::wstring query(4096, L'\0');
+          const DWORD query_length = GetEnvironmentVariableW(
+              L"LISTOPAD_GUI_SMOKE_QUERY", query.data(),
+              static_cast<DWORD>(query.size()));
+          if (query_length > 0 && query_length < query.size()) {
+            query.resize(query_length);
+            SetWindowTextW(find_text_, query.c_str());
+          }
+        }
+        on_command(static_cast<int>(wparam), 0, nullptr);
+      }
+      return 0;
     case kDocumentMapRefreshMessage:
-      for (Tab& tab : documents_) {
+      for (Tab& tab : tab_controller_) {
         if (tab.view != reinterpret_cast<HWND>(wparam) ||
             tab.map != reinterpret_cast<HWND>(lparam) ||
             tab.view_kind != ViewKind::Text) {
@@ -476,7 +508,7 @@ LRESULT EditorWindow::dispatch(const UINT message, const WPARAM wparam, const LP
       RedrawWindow(window_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
       return 0;
     case WM_CLOSE:
-      for (int index = static_cast<int>(documents_.size()) - 1; index >= 0; --index) if (!confirm_close(documents_[index])) return 0;
+      for (int index = static_cast<int>(tab_controller_.size()) - 1; index >= 0; --index) if (!confirm_close(tab_controller_[index])) return 0;
       persist_window_bounds();
       DestroyWindow(window_); return 0;
     case WM_ENDSESSION:
@@ -491,6 +523,10 @@ LRESULT EditorWindow::dispatch(const UINT message, const WPARAM wparam, const LP
 }
 
 bool EditorWindow::on_create() {
+  if (GetEnvironmentVariableW(L"LISTOPAD_GUI_SMOKE", nullptr, 0) > 0) {
+    ChangeWindowMessageFilterEx(
+        window_, kGuiSmokeCommandMessage, MSGFLT_ALLOW, nullptr);
+  }
   rebuild_menu();
   tabs_ = CreateWindowExW(0, WC_TABCONTROLW, L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
                           0, 0, 0, 0, window_, reinterpret_cast<HMENU>(IDC_TAB), instance_, nullptr);
@@ -544,6 +580,28 @@ bool EditorWindow::on_create() {
   if (window_dc) ReleaseDC(window_, window_dc);
   dpi_ = logical_dpi;
   create_toolbar();
+  layout_controller_.bind({
+      .toolbar = toolbar_,
+      .tabs = tabs_,
+      .status = status_,
+      .banner = banner_,
+      .reload_button = reload_button_,
+      .keep_button = keep_button_,
+      .search_panel = search_panel_,
+      .find_text = find_text_,
+      .find_button = find_button_,
+      .find_all_button = find_all_button_,
+      .regex_check = regex_check_,
+      .case_check = case_check_,
+      .whole_word_check = whole_word_check_,
+      .wrap_check = wrap_check_,
+      .selection_only_check = selection_only_check_,
+      .all_tabs_check = all_tabs_check_,
+      .replace_text = replace_text_,
+      .replace_button = replace_button_,
+      .replace_all_button = replace_all_button_,
+      .search_results = search_results_,
+  });
   // Tabs shrink to their label (capped in fit_tab_title) instead of filling a
   // fixed minimum, with a little breathing room top and bottom.
   SendMessageW(tabs_, TCM_SETPADDING, 0,
@@ -624,7 +682,7 @@ void EditorWindow::create_toolbar() {
 }
 
 int EditorWindow::toolbar_height() const {
-  if (!has_visible_style(toolbar_)) return 0;
+  if (!toolbar_) return 0;
   SIZE size{};
   if (SendMessageW(toolbar_, TB_GETMAXSIZE, 0, reinterpret_cast<LPARAM>(&size)) &&
       size.cy > 0)
@@ -804,7 +862,7 @@ void EditorWindow::apply_window_theme() {
                    dark_ ? (text_field ? L"DarkMode_CFD" : L"DarkMode_Explorer") : nullptr,
                    nullptr);
   }
-  for (auto& tab : documents_) {
+  for (auto& tab : tab_controller_) {
     switch (tab.view_kind) {
       case ViewKind::LargeText:
         LargeFileView::set_dark(tab.view, dark_);
@@ -1014,99 +1072,19 @@ void EditorWindow::prepare_menu_bar(HMENU menu) {
 void EditorWindow::on_size() { SendMessageW(status_, WM_SIZE, 0, 0); update_layout(); }
 
 void EditorWindow::update_layout() {
-  if (!window_ || !tabs_) return;
-  RECT client{}; GetClientRect(window_, &client);
-  RECT status_rect{}; GetWindowRect(status_, &status_rect);
-  const int status_height = status_rect.bottom - status_rect.top;
-  // show_search() temporarily disables redraw on the parent to make mode
-  // changes atomic. IsWindowVisible() then reports every child as hidden even
-  // when its own WS_VISIBLE state is set, collapsing the toolbar and skipping
-  // the new search layout. Read each control's requested visibility directly.
-  const bool banner_visible = has_visible_style(banner_);
-  const bool search_visible = has_visible_style(search_panel_);
-  const bool replace_visible = has_visible_style(replace_text_);
-  const bool search_results_visible = has_visible_style(search_results_);
-  const int banner_height = banner_visible ? 36 : 0;
-  const int bar_height = toolbar_height();
-  const int top_offset = bar_height + banner_height;
-  const int search_controls_height = replace_visible ? 112 : 78;
-  const int search_height =
-      search_visible
-          ? search_controls_height + (search_results_visible ? 168 : 0)
-          : 0;
-  if (toolbar_) MoveWindow(toolbar_, 0, 0, client.right, bar_height, TRUE);
-  MoveWindow(tabs_, 0, top_offset, client.right, client.bottom - status_height - top_offset - search_height, TRUE);
-  RECT content{0, 0, client.right, client.bottom - status_height - top_offset - search_height};
-  TabCtrl_AdjustRect(tabs_, FALSE, &content);
-  const int active = active_index();
-  const int available_width = std::max(0L, content.right - content.left);
-  const int desired_map_width = MulDiv(168, dpi_, 96);
-  const int minimum_editor_width = MulDiv(160, dpi_, 96);
-  for (int index = 0; index < static_cast<int>(documents_.size()); ++index) {
-    Tab& tab = documents_[index];
-    const bool map_requested =
-        settings_.show_document_map && tab.view_kind == ViewKind::Text &&
-        tab.map;
-    const int map_width = map_requested
-        ? std::min(desired_map_width,
-                   std::max(0, available_width - minimum_editor_width))
-        : 0;
-    MoveWindow(tab.view, content.left, content.top + top_offset,
-               available_width - map_width, content.bottom - content.top,
-               TRUE);
-    if (tab.map) {
-      MoveWindow(tab.map, content.right - map_width, content.top + top_offset,
-                 map_width, content.bottom - content.top, TRUE);
-      if (map_width > 0) DocumentMap::sync(tab.map, tab.view);
-      ShowWindow(tab.map,
-                 index == active && map_requested && map_width > 0
-                     ? SW_SHOW
-                     : SW_HIDE);
-    }
+  std::vector<EditorPaneWindows> panes;
+  panes.reserve(tab_controller_.size());
+  for (const Tab& tab : tab_controller_) {
+    panes.push_back({
+        .editor = tab.view,
+        .document_map = tab.map,
+        .document_map_requested =
+            settings_.show_document_map &&
+            tab.view_kind == ViewKind::Text,
+    });
   }
-  if (Tab* tab = active_tab(); tab && tab->view) {
-    SetWindowPos(tab->view, HWND_TOP, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    if (has_visible_style(tab->map)) {
-      SetWindowPos(tab->map, HWND_TOP, 0, 0, 0, 0,
-                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    }
-  }
-  if (banner_visible) {
-    SetWindowPos(banner_, HWND_BOTTOM, 0, bar_height, client.right, 36, SWP_NOACTIVATE);
-    SetWindowPos(reload_button_, HWND_TOP, client.right - 260, bar_height + 5, 120, 26,
-                 SWP_NOACTIVATE);
-    SetWindowPos(keep_button_, HWND_TOP, client.right - 132, bar_height + 5, 120, 26,
-                 SWP_NOACTIVATE);
-  }
-  if (search_visible) {
-    const int top = client.bottom - status_height - search_height;
-    MoveWindow(search_panel_, 0, top, client.right, search_height, TRUE);
-    MoveWindow(find_text_, 10, top + 8,
-               static_cast<int>(std::max<LONG>(160, client.right - 270)),
-               24, TRUE);
-    MoveWindow(find_button_, client.right - 250, top + 7, 115, 26, TRUE);
-    MoveWindow(find_all_button_, client.right - 125, top + 7, 115, 26,
-               TRUE);
-    MoveWindow(regex_check_, 10, top + 42, 42, 24, TRUE);
-    MoveWindow(case_check_, 58, top + 42, 42, 24, TRUE);
-    MoveWindow(whole_word_check_, 106, top + 42, 108, 24, TRUE);
-    MoveWindow(wrap_check_, 220, top + 42, 92, 24, TRUE);
-    MoveWindow(selection_only_check_, 318, top + 42, 120, 24, TRUE);
-    MoveWindow(all_tabs_check_, 444, top + 42, 120, 24, TRUE);
-    if (replace_visible) {
-      MoveWindow(replace_text_, 10, top + 76, static_cast<int>(std::max<LONG>(160, client.right - 270)), 24, TRUE);
-      MoveWindow(replace_button_, client.right - 250, top + 75, 115, 26, TRUE);
-      MoveWindow(replace_all_button_, client.right - 125, top + 75, 115, 26, TRUE);
-    }
-    if (search_results_visible) {
-      const int results_top = top + search_controls_height;
-      MoveWindow(search_results_, 10, results_top,
-                 std::max(0L, client.right - 20),
-                 std::max(0, search_height - search_controls_height - 8),
-                 TRUE);
-    }
-  }
+  layout_controller_.apply(window_, toolbar_height(), dpi_, active_index(),
+                           panes);
 }
 
 LRESULT CALLBACK EditorWindow::tabs_subclass(HWND window, const UINT message,
@@ -1316,24 +1294,23 @@ LRESULT CALLBACK EditorWindow::status_subclass(HWND window, const UINT message,
 }
 
 EditorWindow::Tab* EditorWindow::active_tab() {
-  const int index = active_index(); return index >= 0 ? &documents_[index] : nullptr;
+  return tab_controller_.active();
 }
 const EditorWindow::Tab* EditorWindow::active_tab() const {
-  const int index = active_index(); return index >= 0 ? &documents_[index] : nullptr;
+  return tab_controller_.active();
 }
 int EditorWindow::active_index() const {
-  const int selected = tabs_ ? TabCtrl_GetCurSel(tabs_) : -1;
-  return selected >= 0 && selected < static_cast<int>(documents_.size()) ? selected : -1;
+  return tab_controller_.active_index();
 }
 
 void EditorWindow::activate_tab(const int index) {
-  if (index < 0 || index >= static_cast<int>(documents_.size())) return;
+  if (!tab_controller_.activate(index)) return;
   TabCtrl_SetCurSel(tabs_, index);
-  for (int i = 0; i < static_cast<int>(documents_.size()); ++i) {
-    ShowWindow(documents_[i].view, i == index ? SW_SHOW : SW_HIDE);
-    if (documents_[i].map) ShowWindow(documents_[i].map, SW_HIDE);
+  for (int i = 0; i < static_cast<int>(tab_controller_.size()); ++i) {
+    ShowWindow(tab_controller_[i].view, i == index ? SW_SHOW : SW_HIDE);
+    if (tab_controller_[i].map) ShowWindow(tab_controller_[i].map, SW_HIDE);
   }
-  SetFocus(documents_[index].view);
+  SetFocus(tab_controller_[index].view);
   refresh_view_menu_state();
   update_ui();
   update_layout();
@@ -1355,214 +1332,28 @@ HWND EditorWindow::create_editor() {
 }
 
 void EditorWindow::destroy_tab_views(Tab& tab) {
-  if (tab.map) {
-    DestroyWindow(tab.map);
-    tab.map = nullptr;
-  }
-  if (tab.view) {
-    DestroyWindow(tab.view);
-    tab.view = nullptr;
-  }
-  if (tab.suspended_text_map) {
-    DestroyWindow(tab.suspended_text_map);
-    tab.suspended_text_map = nullptr;
-  }
-  if (tab.suspended_text_view) {
-    DestroyWindow(tab.suspended_text_view);
-    tab.suspended_text_view = nullptr;
-  }
+  view_controller_.destroy(*this, tab);
 }
 
 bool EditorWindow::create_tab_views(Tab& tab) {
-  destroy_tab_views(tab);
-  switch (tab.view_kind) {
-    case ViewKind::Text:
-      tab.view = create_editor();
-      if (!tab.view) return false;
-      configure_editor(tab.view, tab.document);
-      set_editor_text(tab.view, tab.document.text, true);
-      tab.map = DocumentMap::create(window_, IDC_DOCUMENT_MAP, instance_);
-      if (!tab.map) {
-        destroy_tab_views(tab);
-        return false;
-      }
-      DocumentMap::attach(tab.map, tab.view);
-      DocumentMap::restyle(tab.map, tab.view, settings_.font_face, dark_);
-      DocumentMap::sync(tab.map, tab.view);
-      PostMessageW(window_, kDocumentMapRefreshMessage,
-                   reinterpret_cast<WPARAM>(tab.view),
-                   reinterpret_cast<LPARAM>(tab.map));
-      return true;
-    case ViewKind::LargeText:
-      tab.view = LargeFileView::create(window_, IDC_EDITOR);
-      if (!tab.view) return false;
-      SendMessageW(tab.view, WM_SETFONT, reinterpret_cast<WPARAM>(editor_font_),
-                   TRUE);
-      LargeFileView::set_dark(tab.view, dark_);
-      if (!LargeFileView::open(tab.view, tab.document.path)) {
-        destroy_tab_views(tab);
-        return false;
-      }
-      return true;
-    case ViewKind::Hex:
-      tab.view = HexViewWindow::create(window_, IDC_EDITOR);
-      if (!tab.view) return false;
-      SendMessageW(tab.view, WM_SETFONT, reinterpret_cast<WPARAM>(editor_font_),
-                   TRUE);
-      HexViewWindow::set_dark(tab.view, dark_);
-      if (!HexViewWindow::open(tab.view, tab.document.path)) {
-        destroy_tab_views(tab);
-        return false;
-      }
-      return true;
-  }
-  return false;
+  return view_controller_.create(*this, tab);
 }
 
 bool EditorWindow::switch_tab_view(Tab& tab, const ViewKind requested) {
-  if (!tab.document.has_path() || tab.document.dirty ||
-      tab.document.external_diverged) {
-    return false;
-  }
-
-  ViewKind target = requested;
-  std::optional<Document> replacement;
-  if (requested == ViewKind::Text && tab.view_kind == ViewKind::Hex &&
-      !tab.suspended_text_view) {
-    const Encoding* forced =
-        tab.document.large_file ? nullptr : &tab.document.encoding;
-    LoadDocumentResult loaded = load_document(
-        tab.document.path, settings_.large_file_threshold, forced);
-    if (!loaded.ok) {
-      MessageBoxW(
-          window_,
-          (tr(L"Не удалось открыть файл:\n", L"Unable to open file:\n") +
-           win32_error_message(loaded.error))
-              .c_str(),
-          LISTOPAD_PRODUCT_NAME, MB_ICONERROR);
-      return false;
-    }
-    target = loaded.document.large_file ? ViewKind::LargeText : ViewKind::Text;
-    replacement = std::move(loaded.document);
-  }
-  if (target == tab.view_kind) return true;
-
-  clear_find_all_results();
-  search_thread_.request_stop();
-  ++search_generation_;
-
-  // A read-only Hex view does not need to destroy the editable Scintilla
-  // control. Keeping it hidden preserves the complete undo/redo graph, caret,
-  // folds, and the save point across a Text -> Hex -> Text round trip.
-  if (target == ViewKind::Hex && tab.view_kind == ViewKind::Text) {
-    const HWND text_view = tab.view;
-    const HWND text_map = tab.map;
-    tab.suspended_text_view = text_view;
-    tab.suspended_text_map = text_map;
-    tab.view = HexViewWindow::create(window_, IDC_EDITOR);
-    tab.map = nullptr;
-    tab.view_kind = ViewKind::Hex;
-    if (!tab.view) {
-      tab.view = text_view;
-      tab.map = text_map;
-      tab.suspended_text_view = nullptr;
-      tab.suspended_text_map = nullptr;
-      tab.view_kind = ViewKind::Text;
-      return false;
-    }
-    SendMessageW(tab.view, WM_SETFONT,
-                 reinterpret_cast<WPARAM>(editor_font_), TRUE);
-    HexViewWindow::set_dark(tab.view, dark_);
-    if (!HexViewWindow::open(tab.view, tab.document.path)) {
-      DestroyWindow(tab.view);
-      tab.view = text_view;
-      tab.map = text_map;
-      tab.suspended_text_view = nullptr;
-      tab.suspended_text_map = nullptr;
-      tab.view_kind = ViewKind::Text;
-      return false;
-    }
-    ShowWindow(text_view, SW_HIDE);
-    if (text_map) ShowWindow(text_map, SW_HIDE);
-    tab.snippet_fields.clear();
-    tab.snippet_index = 0;
-    refresh_view_menu_state();
-    update_ui();
-    update_layout();
-    SetFocus(tab.view);
-    return true;
-  }
-
-  if (target == ViewKind::Text && tab.view_kind == ViewKind::Hex &&
-      tab.suspended_text_view) {
-    const HWND hex_view = tab.view;
-    tab.view = tab.suspended_text_view;
-    tab.map = tab.suspended_text_map;
-    tab.suspended_text_view = nullptr;
-    tab.suspended_text_map = nullptr;
-    tab.view_kind = ViewKind::Text;
-    if (hex_view) DestroyWindow(hex_view);
-    configure_editor(tab.view, tab.document);
-    if (tab.map) {
-      DocumentMap::attach(tab.map, tab.view);
-      DocumentMap::restyle(tab.map, tab.view, settings_.font_face, dark_);
-      DocumentMap::sync(tab.map, tab.view);
-      PostMessageW(window_, kDocumentMapRefreshMessage,
-                   reinterpret_cast<WPARAM>(tab.view),
-                   reinterpret_cast<LPARAM>(tab.map));
-    }
-    refresh_view_menu_state();
-    update_ui();
-    update_layout();
-    SetFocus(tab.view);
-    return true;
-  }
-
-  const ViewKind previous_kind = tab.view_kind;
-  const HWND previous_view = tab.view;
-  const HWND previous_map = tab.map;
-  std::optional<Document> previous_document;
-  if (replacement) {
-    previous_document = std::move(tab.document);
-    tab.document = std::move(*replacement);
-  }
-  tab.view_kind = target;
-  tab.view = nullptr;
-  tab.map = nullptr;
-  if (!create_tab_views(tab)) {
-    tab.view_kind = previous_kind;
-    tab.view = previous_view;
-    tab.map = previous_map;
-    if (previous_document) tab.document = std::move(*previous_document);
-    MessageBoxW(window_,
-                tr(L"Не удалось создать представление файла.",
-                   L"Unable to create the file view."),
-                LISTOPAD_PRODUCT_NAME, MB_ICONERROR);
-    return false;
-  }
-
-  if (previous_map) DestroyWindow(previous_map);
-  if (previous_view) DestroyWindow(previous_view);
-  tab.snippet_fields.clear();
-  tab.snippet_index = 0;
-  refresh_view_menu_state();
-  update_ui();
-  update_layout();
-  SetFocus(tab.view);
-  return true;
+  return view_controller_.switch_to(*this, tab, requested);
 }
 
 void EditorWindow::add_empty_tab() {
   Tab tab;
   tab.document.title = tr(L"Без имени", L"Untitled");
-  documents_.push_back(std::move(tab));
-  if (!create_tab_views(documents_.back())) {
-    documents_.pop_back();
+  tab_controller_.push_back(std::move(tab));
+  if (!create_tab_views(tab_controller_.back())) {
+    tab_controller_.pop_back();
     return;
   }
-  TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = documents_.back().document.title.data();
-  TabCtrl_InsertItem(tabs_, static_cast<int>(documents_.size() - 1), &item);
-  activate_tab(static_cast<int>(documents_.size() - 1));
+  TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = tab_controller_.back().document.title.data();
+  TabCtrl_InsertItem(tabs_, static_cast<int>(tab_controller_.size() - 1), &item);
+  activate_tab(static_cast<int>(tab_controller_.size() - 1));
 }
 
 void EditorWindow::configure_editor(HWND editor, const Document& document) {
@@ -1613,9 +1404,9 @@ void EditorWindow::configure_editor(HWND editor, const Document& document) {
   sci(editor, SCI_INDICSETALPHA, kFindAllIndicator, dark_ ? 75 : 55);
   sci(editor, SCI_INDICSETOUTLINEALPHA, kFindAllIndicator, 150);
   sci(editor, SCI_INDICSETUNDER, kFindAllIndicator, TRUE);
-  const auto found = std::find_if(documents_.begin(), documents_.end(),
+  const auto found = std::find_if(tab_controller_.begin(), tab_controller_.end(),
                                   [editor](const Tab& tab) { return tab.view == editor; });
-  if (found != documents_.end()) apply_language(*found, document.language);
+  if (found != tab_controller_.end()) apply_language(*found, document.language);
 }
 
 void EditorWindow::apply_language(Tab& tab, const std::string_view language) {
@@ -1769,22 +1560,44 @@ std::string EditorWindow::editor_text(HWND editor) const {
   text.resize(length); return text;
 }
 
-void EditorWindow::set_editor_text(HWND editor, const std::string_view text, const bool save_point) {
-  sci(editor, SCI_SETREADONLY, FALSE);
-  // Loading/reloading is baseline state, not an edit. Without clearing this
-  // synthetic SCI_SETTEXT action, Ctrl+Z on a freshly opened document erases
-  // the entire file.
-  sci(editor, SCI_SETUNDOCOLLECTION, FALSE);
-  sci(editor, SCI_SETTEXT, 0, pointer_param(std::string(text).c_str()));
-  sci(editor, SCI_SETUNDOCOLLECTION, TRUE);
-  sci(editor, SCI_EMPTYUNDOBUFFER);
-  if (save_point) sci(editor, SCI_SETSAVEPOINT);
+void EditorWindow::set_editor_text(Tab& tab, const std::string_view text,
+                                   const DocumentMutationOrigin origin) {
+  sci(tab.view, SCI_SETREADONLY, FALSE);
+  DocumentMutationScope mutation(*this, tab, origin);
+  const std::string owned(text);
+  sci(tab.view, SCI_SETTEXT, 0, pointer_param(owned.c_str()));
+}
+
+void EditorWindow::replace_editor_range(
+    Tab& tab, const std::size_t start, const std::size_t end,
+    const std::string_view text, const DocumentMutationOrigin origin) {
+  DocumentMutationScope mutation(*this, tab, origin);
+  sci(tab.view, SCI_SETTARGETSTART, start);
+  sci(tab.view, SCI_SETTARGETEND, end);
+  sci(tab.view, SCI_REPLACETARGET, text.size(), pointer_param(text.data()));
+}
+
+void EditorWindow::finish_document_mutation(
+    Tab& tab, const DocumentMutationOrigin origin) {
+  const DocumentMutationPolicy policy = mutation_policy(origin);
+  if (policy.reset_snippet) tab.clear_transient_editor_state();
+  if (policy.invalidate_search && !search_hits_.empty()) {
+    clear_find_all_results();
+  }
+  if (tab.view_kind != ViewKind::Text || !tab.map) return;
+  if (policy.recolor) {
+    PostMessageW(window_, kDocumentMapRefreshMessage,
+                 reinterpret_cast<WPARAM>(tab.view),
+                 reinterpret_cast<LPARAM>(tab.map));
+  } else if (policy.refresh_document_map) {
+    DocumentMap::content_changed(tab.map, tab.view);
+  }
 }
 
 bool EditorWindow::open_file(const std::filesystem::path& input, const Encoding* forced) {
   const auto path = canonical_path(input);
-  for (int i = 0; i < static_cast<int>(documents_.size()); ++i) {
-    if (documents_[i].document.has_path() && lowercase(documents_[i].document.path.wstring()) == lowercase(path.wstring())) {
+  for (int i = 0; i < static_cast<int>(tab_controller_.size()); ++i) {
+    if (tab_controller_[i].document.has_path() && lowercase(tab_controller_[i].document.path.wstring()) == lowercase(path.wstring())) {
       activate_tab(i); return true;
     }
   }
@@ -1808,20 +1621,20 @@ bool EditorWindow::open_file(const std::filesystem::path& input, const Encoding*
     if (answer == IDCANCEL) return false;
     view_kind = answer == IDYES ? ViewKind::Hex : ViewKind::Text;
   }
-  if (documents_.size() == 1 && !documents_[0].document.has_path() && !documents_[0].document.dirty &&
-      editable(documents_[0]) && editor_text(documents_[0].view).empty()) {
-    destroy_tab_views(documents_[0]);
-    documents_.clear();
+  if (tab_controller_.size() == 1 && !tab_controller_[0].document.has_path() && !tab_controller_[0].document.dirty &&
+      editable(tab_controller_[0]) && editor_text(tab_controller_[0].view).empty()) {
+    destroy_tab_views(tab_controller_[0]);
+    tab_controller_.clear();
     TabCtrl_DeleteAllItems(tabs_);
   }
   Tab tab;
   tab.document = std::move(loaded.document);
   tab.view_kind = view_kind;
-  documents_.push_back(std::move(tab));
-  Tab& added = documents_.back();
+  tab_controller_.push_back(std::move(tab));
+  Tab& added = tab_controller_.back();
   if (!create_tab_views(added)) {
-    documents_.pop_back();
-    if (documents_.empty()) add_empty_tab();
+    tab_controller_.pop_back();
+    if (tab_controller_.empty()) add_empty_tab();
     MessageBoxW(window_,
                 tr(L"Не удалось создать представление файла.",
                    L"Unable to create the file view."),
@@ -1829,16 +1642,16 @@ bool EditorWindow::open_file(const std::filesystem::path& input, const Encoding*
     return false;
   }
   if (added.view_kind == ViewKind::Hex) added.document.text.clear();
-  TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = documents_.back().document.title.data();
-  TabCtrl_InsertItem(tabs_, static_cast<int>(documents_.size() - 1), &item);
-  watcher_.watch(path); activate_tab(static_cast<int>(documents_.size() - 1)); return true;
+  TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = tab_controller_.back().document.title.data();
+  TabCtrl_InsertItem(tabs_, static_cast<int>(tab_controller_.size() - 1), &item);
+  watcher_.watch(path); activate_tab(static_cast<int>(tab_controller_.size() - 1)); return true;
 }
 
 void EditorWindow::open_request(const ipc::OpenFilesRequest& request) {
   std::optional<Encoding> forced;
   if (!request.encoding.empty()) forced = encoding_from_name(request.encoding);
   for (const auto& path : request.files) open_file(path, forced ? &*forced : nullptr);
-  if (request.files.empty() && documents_.empty()) add_empty_tab();
+  if (request.files.empty() && tab_controller_.empty()) add_empty_tab();
   if (Tab* tab = active_tab(); tab && editable(*tab) && request.line > 0) {
     const auto line = static_cast<sptr_t>(request.line - 1);
     sptr_t position = sci(tab->view, SCI_POSITIONFROMLINE, line);
@@ -1926,7 +1739,8 @@ void EditorWindow::reopen_active(const Encoding& encoding) {
   tab->document = std::move(loaded.document);
   tab->external_notice_pending = false;
   configure_editor(tab->view, tab->document);
-  set_editor_text(tab->view, tab->document.text, true);
+  set_editor_text(*tab, tab->document.text,
+                  DocumentMutationOrigin::Reload);
   update_ui();
 }
 
@@ -1939,19 +1753,18 @@ bool EditorWindow::confirm_close(Tab& tab) {
 }
 
 bool EditorWindow::close_tab(const int index) {
-  if (index < 0 || index >= static_cast<int>(documents_.size()) || !confirm_close(documents_[index])) return false;
+  if (index < 0 || index >= static_cast<int>(tab_controller_.size()) || !confirm_close(tab_controller_[index])) return false;
   clear_find_all_results();
-  search_thread_.request_stop();
-  ++search_generation_;
-  destroy_tab_views(documents_[index]);
-  documents_.erase(documents_.begin() + index);
+  search_.cancel();
+  destroy_tab_views(tab_controller_[index]);
+  tab_controller_.erase(tab_controller_.begin() + index);
   TabCtrl_DeleteItem(tabs_, index);
-  if (documents_.empty()) add_empty_tab(); else activate_tab(std::min(index, static_cast<int>(documents_.size()) - 1));
+  if (tab_controller_.empty()) add_empty_tab(); else activate_tab(std::min(index, static_cast<int>(tab_controller_.size()) - 1));
   return true;
 }
 
 void EditorWindow::handle_external_change(const std::filesystem::path& path) {
-  for (auto& tab : documents_) {
+  for (auto& tab : tab_controller_) {
     if (!tab.document.has_path() || lowercase(tab.document.path.wstring()) != lowercase(path.wstring())) continue;
     const FileFingerprint current = fingerprint_file(path);
     if (current == tab.document.fingerprint) continue;
@@ -1972,13 +1785,11 @@ void EditorWindow::reload_active() {
     case ViewKind::Hex:
       if (!HexViewWindow::open(tab->view, tab->document.path)) return;
       tab->document.fingerprint = fingerprint_file(tab->document.path);
-      if (tab->suspended_text_map) {
-        DestroyWindow(tab->suspended_text_map);
-        tab->suspended_text_map = nullptr;
-      }
-      if (tab->suspended_text_view) {
-        DestroyWindow(tab->suspended_text_view);
-        tab->suspended_text_view = nullptr;
+      {
+        const EditorSurface preserved =
+            tab->take_preserved_text_surface();
+        if (preserved.map) DestroyWindow(preserved.map);
+        if (preserved.view) DestroyWindow(preserved.view);
       }
       tab->document.text.clear();
       break;
@@ -1989,14 +1800,12 @@ void EditorWindow::reload_active() {
       if (!loaded.ok || loaded.document.large_file) return;
       tab->document = std::move(loaded.document);
       configure_editor(tab->view, tab->document);
-      set_editor_text(tab->view, tab->document.text, true);
+      set_editor_text(*tab, tab->document.text,
+                      DocumentMutationOrigin::Reload);
       if (tab->map) {
         DocumentMap::attach(tab->map, tab->view);
         DocumentMap::restyle(tab->map, tab->view, settings_.font_face, dark_);
         DocumentMap::sync(tab->map, tab->view);
-        PostMessageW(window_, kDocumentMapRefreshMessage,
-                     reinterpret_cast<WPARAM>(tab->view),
-                     reinterpret_cast<LPARAM>(tab->map));
       }
       break;
     }
@@ -2014,28 +1823,49 @@ void EditorWindow::keep_external_active() {
 
 void EditorWindow::show_search(const bool replace) {
   const Tab* tab = active_tab();
-  const bool hex = tab && tab->view_kind == ViewKind::Hex;
   const bool allow_replace = replace && tab && editable(*tab);
-  const bool allow_find_all = tab && editable(*tab);
+  layout_controller_.state().search_mode =
+      allow_replace ? SearchMode::Replace : SearchMode::Find;
+  layout_controller_.state().search_results_visible = !search_hits_.empty();
   SendMessageW(window_, WM_SETREDRAW, FALSE, 0);
-  ShowWindow(search_panel_, SW_SHOW); ShowWindow(find_text_, SW_SHOW); ShowWindow(find_button_, SW_SHOW);
-  ShowWindow(find_all_button_, allow_find_all ? SW_SHOW : SW_HIDE);
-  ShowWindow(regex_check_, hex ? SW_HIDE : SW_SHOW);
-  ShowWindow(case_check_, SW_SHOW);
-  ShowWindow(all_tabs_check_, hex ? SW_HIDE : SW_SHOW);
-  ShowWindow(whole_word_check_, hex ? SW_HIDE : SW_SHOW);
-  ShowWindow(wrap_check_, SW_SHOW);
-  ShowWindow(selection_only_check_, hex ? SW_HIDE : SW_SHOW);
-  ShowWindow(replace_text_, allow_replace ? SW_SHOW : SW_HIDE);
-  ShowWindow(replace_button_, allow_replace ? SW_SHOW : SW_HIDE);
-  ShowWindow(replace_all_button_, allow_replace ? SW_SHOW : SW_HIDE);
-  ShowWindow(search_results_, search_hits_.empty() ? SW_HIDE : SW_SHOW);
+  apply_search_visibility();
   update_layout();
   SendMessageW(window_, WM_SETREDRAW, TRUE, 0);
   RedrawWindow(window_, nullptr, nullptr,
                RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN |
                    RDW_UPDATENOW);
   SetFocus(find_text_); Edit_SetSel(find_text_, 0, -1);
+}
+
+void EditorWindow::apply_search_visibility() {
+  const Tab* tab = active_tab();
+  UiState& ui_state = layout_controller_.state();
+  const bool visible = ui_state.search_mode != SearchMode::Hidden;
+  const bool editable_tab = tab && editable(*tab);
+  const bool hex = tab && tab->view_kind == ViewKind::Hex;
+  if (ui_state.search_mode == SearchMode::Replace && !editable_tab) {
+    ui_state.search_mode = SearchMode::Find;
+  }
+  ui_state.search_results_visible =
+      visible && editable_tab && !search_hits_.empty();
+  const bool replace_visible =
+      ui_state.search_mode == SearchMode::Replace && editable_tab;
+
+  ShowWindow(search_panel_, visible ? SW_SHOW : SW_HIDE);
+  ShowWindow(find_text_, visible ? SW_SHOW : SW_HIDE);
+  ShowWindow(find_button_, visible ? SW_SHOW : SW_HIDE);
+  ShowWindow(find_all_button_, visible && editable_tab ? SW_SHOW : SW_HIDE);
+  ShowWindow(regex_check_, visible && !hex ? SW_SHOW : SW_HIDE);
+  ShowWindow(case_check_, visible ? SW_SHOW : SW_HIDE);
+  ShowWindow(all_tabs_check_, visible && !hex ? SW_SHOW : SW_HIDE);
+  ShowWindow(whole_word_check_, visible && !hex ? SW_SHOW : SW_HIDE);
+  ShowWindow(wrap_check_, visible ? SW_SHOW : SW_HIDE);
+  ShowWindow(selection_only_check_, visible && !hex ? SW_SHOW : SW_HIDE);
+  ShowWindow(replace_text_, replace_visible ? SW_SHOW : SW_HIDE);
+  ShowWindow(replace_button_, replace_visible ? SW_SHOW : SW_HIDE);
+  ShowWindow(replace_all_button_, replace_visible ? SW_SHOW : SW_HIDE);
+  ShowWindow(search_results_,
+             ui_state.search_results_visible ? SW_SHOW : SW_HIDE);
 }
 
 void EditorWindow::find_next() {
@@ -2065,13 +1895,13 @@ void EditorWindow::find_next() {
   const int first = active_index();
   std::vector<int> order{first};
   if (all_tabs) {
-    for (int index = first + 1; index < static_cast<int>(documents_.size()); ++index) order.push_back(index);
+    for (int index = first + 1; index < static_cast<int>(tab_controller_.size()); ++index) order.push_back(index);
     if (wrap) for (int index = 0; index < first; ++index) order.push_back(index);
   }
 
   std::vector<SearchTabResult> snapshots;
   for (const int index : order) {
-    Tab& item = documents_[index];
+    Tab& item = tab_controller_[index];
     if (!editable(item)) continue;
     SearchTabResult snapshot;
     snapshot.index = index;
@@ -2092,32 +1922,15 @@ void EditorWindow::find_next() {
   }
   if (snapshots.empty()) return;
 
-  search_thread_.request_stop();
-  const std::uint64_t generation = ++search_generation_;
-  const HWND destination = window_;
   SendMessageW(status_, SB_SETTEXTW, 0,
                pointer_param(tr(L"Поиск…", L"Searching…")));
-  search_thread_ = std::jthread(
-      [destination, generation, wrap, options, pattern,
-       snapshots = std::move(snapshots)](const std::stop_token stop) mutable {
-        auto completed = std::make_unique<SearchJobResult>();
-        completed->kind = SearchJobKind::Find;
-        completed->generation = generation;
-        completed->wrap = wrap;
-        completed->tabs = std::move(snapshots);
-        for (auto& item : completed->tabs) {
-          item.found = search_all(item.subject, pattern, options, stop);
-          if (stop.stop_requested()) return;
-        }
-        SearchJobResult* raw = completed.release();
-        if (!PostMessageW(destination, EditorWindow::kSearchResultMessage, 0,
-                          reinterpret_cast<LPARAM>(raw))) delete raw;
-      });
+  search_.start_find(window_, kSearchResultMessage, SearchJobKind::Find,
+                     std::move(snapshots), pattern, options, wrap);
 }
 
 void EditorWindow::find_all() {
   const int active = active_index();
-  if (active < 0 || !editable(documents_[active])) return;
+  if (active < 0 || !editable(tab_controller_[active])) return;
   SearchOptions options;
   options.regular_expression = Button_GetCheck(regex_check_) == BST_CHECKED;
   options.match_case = Button_GetCheck(case_check_) == BST_CHECKED;
@@ -2130,9 +1943,9 @@ void EditorWindow::find_all() {
   const bool all_tabs =
       !selection_only && Button_GetCheck(all_tabs_check_) == BST_CHECKED;
   std::vector<SearchTabResult> snapshots;
-  for (int index = 0; index < static_cast<int>(documents_.size()); ++index) {
+  for (int index = 0; index < static_cast<int>(tab_controller_.size()); ++index) {
     if (!all_tabs && index != active) continue;
-    Tab& tab = documents_[index];
+    Tab& tab = tab_controller_[index];
     if (!editable(tab)) continue;
     SearchTabResult snapshot;
     snapshot.index = index;
@@ -2154,29 +1967,11 @@ void EditorWindow::find_all() {
   }
   if (snapshots.empty()) return;
 
-  search_thread_.request_stop();
-  const std::uint64_t generation = ++search_generation_;
-  const HWND destination = window_;
   SendMessageW(status_, SB_SETTEXTW, 0,
                pointer_param(tr(L"Поиск всех совпадений…",
                                 L"Finding all matches…")));
-  search_thread_ = std::jthread(
-      [destination, generation, options, pattern,
-       snapshots = std::move(snapshots)](const std::stop_token stop) mutable {
-        auto completed = std::make_unique<SearchJobResult>();
-        completed->kind = SearchJobKind::FindAll;
-        completed->generation = generation;
-        completed->tabs = std::move(snapshots);
-        for (auto& item : completed->tabs) {
-          item.found = search_all(item.subject, pattern, options, stop);
-          if (stop.stop_requested()) return;
-        }
-        SearchJobResult* raw = completed.release();
-        if (!PostMessageW(destination, EditorWindow::kSearchResultMessage, 0,
-                          reinterpret_cast<LPARAM>(raw))) {
-          delete raw;
-        }
-      });
+  search_.start_find(window_, kSearchResultMessage, SearchJobKind::FindAll,
+                     std::move(snapshots), pattern, options, true);
 }
 
 void EditorWindow::replace_one() {
@@ -2204,11 +1999,8 @@ void EditorWindow::replace_one() {
         MessageBoxW(window_, utf8_to_wide(replaced.error).c_str(), LISTOPAD_PRODUCT_NAME, MB_ICONERROR);
         return;
       }
-      sci(tab->view, SCI_BEGINUNDOACTION);
-      sci(tab->view, SCI_SETTARGETSTART, begin);
-      sci(tab->view, SCI_SETTARGETEND, end);
-      sci(tab->view, SCI_REPLACETARGET, replaced.text.size(), pointer_param(replaced.text.data()));
-      sci(tab->view, SCI_ENDUNDOACTION);
+      replace_editor_range(*tab, begin, end, replaced.text,
+                           DocumentMutationOrigin::Replace);
       find_next();
       return;
     }
@@ -2228,9 +2020,9 @@ void EditorWindow::replace_all_open_tabs() {
   const bool all_tabs = !selection_only && Button_GetCheck(all_tabs_check_) == BST_CHECKED;
   const int active = active_index();
   std::vector<SearchTabResult> snapshots;
-  for (int index = 0; index < static_cast<int>(documents_.size()); ++index) {
+  for (int index = 0; index < static_cast<int>(tab_controller_.size()); ++index) {
     if (!all_tabs && index != active) continue;
-    Tab& tab = documents_[index];
+    Tab& tab = tab_controller_[index];
     if (!editable(tab)) continue;
     SearchTabResult snapshot;
     snapshot.index = index;
@@ -2247,31 +2039,16 @@ void EditorWindow::replace_all_open_tabs() {
   }
   if (snapshots.empty()) return;
 
-  search_thread_.request_stop();
-  const std::uint64_t generation = ++search_generation_;
-  const HWND destination = window_;
   SendMessageW(status_, SB_SETTEXTW, 0,
                pointer_param(tr(L"Замена…", L"Replacing…")));
-  search_thread_ = std::jthread(
-      [destination, generation, options, pattern, replacement,
-       snapshots = std::move(snapshots)](const std::stop_token stop) mutable {
-        auto completed = std::make_unique<SearchJobResult>();
-        completed->kind = SearchJobKind::ReplaceAll;
-        completed->generation = generation;
-        completed->tabs = std::move(snapshots);
-        for (auto& item : completed->tabs) {
-          item.replaced = replace_all(item.subject, pattern, replacement, options, stop);
-          if (stop.stop_requested()) return;
-        }
-        SearchJobResult* raw = completed.release();
-        if (!PostMessageW(destination, EditorWindow::kSearchResultMessage, 0,
-                          reinterpret_cast<LPARAM>(raw))) delete raw;
-      });
+  search_.start_replace_all(window_, kSearchResultMessage,
+                            std::move(snapshots), pattern, replacement,
+                            options);
 }
 
 void EditorWindow::handle_search_result(void* raw_result) {
   std::unique_ptr<SearchJobResult> result(static_cast<SearchJobResult*>(raw_result));
-  if (!result || result->generation != search_generation_) return;
+  if (!result || !search_.accepts(*result)) return;
 
   for (const auto& item : result->tabs) {
     const bool search_job = result->kind != SearchJobKind::ReplaceAll;
@@ -2284,8 +2061,8 @@ void EditorWindow::handle_search_result(void* raw_result) {
       update_ui();
       return;
     }
-    if (item.index < 0 || item.index >= static_cast<int>(documents_.size()) ||
-        editor_text(documents_[item.index].view) != item.original) {
+    if (item.index < 0 || item.index >= static_cast<int>(tab_controller_.size()) ||
+        editor_text(tab_controller_[item.index].view) != item.original) {
       update_ui();
       return;
     }
@@ -2297,7 +2074,7 @@ void EditorWindow::handle_search_result(void* raw_result) {
     std::size_t visible = 0;
     SendMessageW(search_results_, LB_RESETCONTENT, 0, 0);
     for (const auto& item : result->tabs) {
-      Tab& tab = documents_[item.index];
+      Tab& tab = tab_controller_[item.index];
       total += item.found.matches.size();
       sci(tab.view, SCI_SETINDICATORCURRENT, kFindAllIndicator);
       for (const SearchMatch& match : item.found.matches) {
@@ -2365,8 +2142,10 @@ void EditorWindow::handle_search_result(void* raw_result) {
     }
     SendMessageW(search_results_, LB_SETHORIZONTALEXTENT,
                  MulDiv(1200, dpi_, 96), 0);
+    layout_controller_.state().search_results_visible =
+        !search_hits_.empty();
     if (!search_hits_.empty()) {
-      ShowWindow(search_results_, SW_SHOW);
+      apply_search_visibility();
       SendMessageW(search_results_, LB_SETCURSEL, 0, 0);
     }
     update_layout();
@@ -2413,7 +2192,7 @@ void EditorWindow::handle_search_result(void* raw_result) {
       return;
     }
     activate_tab(selected_tab->index);
-    Tab& tab = documents_[selected_tab->index];
+    Tab& tab = tab_controller_[selected_tab->index];
     const std::size_t start = selected_tab->base + selected_match->start;
     if (selected_match->length == 0) {
       const auto next = static_cast<sptr_t>(
@@ -2434,13 +2213,10 @@ void EditorWindow::handle_search_result(void* raw_result) {
   std::size_t total = 0;
   for (const auto& item : result->tabs) {
     if (!item.replaced.replacements) continue;
-    Tab& tab = documents_[item.index];
-    sci(tab.view, SCI_BEGINUNDOACTION);
-    sci(tab.view, SCI_SETTARGETSTART, item.base);
-    sci(tab.view, SCI_SETTARGETEND, item.base + item.subject.size());
-    sci(tab.view, SCI_REPLACETARGET, item.replaced.text.size(),
-        pointer_param(item.replaced.text.data()));
-    sci(tab.view, SCI_ENDUNDOACTION);
+    Tab& tab = tab_controller_[item.index];
+    replace_editor_range(tab, item.base, item.base + item.subject.size(),
+                         item.replaced.text,
+                         DocumentMutationOrigin::Replace);
     total += item.replaced.replacements;
   }
   std::wstring message = tr(L"Замен: ", L"Replacements: ");
@@ -2451,8 +2227,9 @@ void EditorWindow::handle_search_result(void* raw_result) {
 
 void EditorWindow::clear_find_all_results() {
   const bool was_visible =
-      search_results_ && IsWindowVisible(search_results_) != FALSE;
-  for (Tab& tab : documents_) {
+      layout_controller_.state().search_results_visible;
+  layout_controller_.state().search_results_visible = false;
+  for (Tab& tab : tab_controller_) {
     const auto clear_editor = [](const HWND editor) {
       if (!editor) return;
       sci(editor, SCI_SETINDICATORCURRENT, kFindAllIndicator);
@@ -2460,7 +2237,7 @@ void EditorWindow::clear_find_all_results() {
           sci(editor, SCI_GETLENGTH));
     };
     if (tab.view_kind == ViewKind::Text) clear_editor(tab.view);
-    clear_editor(tab.suspended_text_view);
+    clear_editor(tab.preserved_text_view());
   }
   search_hits_.clear();
   if (search_results_) {
@@ -2485,13 +2262,13 @@ void EditorWindow::navigate_search_result(const int result_index) {
   }
   const SearchHit hit = search_hits_[static_cast<std::size_t>(data)];
   if (hit.tab_index < 0 ||
-      hit.tab_index >= static_cast<int>(documents_.size()) ||
-      !editable(documents_[hit.tab_index])) {
+      hit.tab_index >= static_cast<int>(tab_controller_.size()) ||
+      !editable(tab_controller_[hit.tab_index])) {
     clear_find_all_results();
     return;
   }
   activate_tab(hit.tab_index);
-  Tab& tab = documents_[hit.tab_index];
+  Tab& tab = tab_controller_[hit.tab_index];
   if (hit.start > static_cast<std::size_t>(
                       sci(tab.view, SCI_GETLENGTH))) {
     clear_find_all_results();
@@ -2534,18 +2311,8 @@ void EditorWindow::format_active() {
   }
   const std::size_t target_start = end > start ? start : 0;
   const std::size_t target_end = end > start ? end : full.size();
-  sci(tab->view, SCI_BEGINUNDOACTION); sci(tab->view, SCI_SETTARGETSTART, target_start);
-  sci(tab->view, SCI_SETTARGETEND, target_end);
-  sci(tab->view, SCI_REPLACETARGET, formatted.text.size(), pointer_param(formatted.text.data()));
-  sci(tab->view, SCI_ENDUNDOACTION);
-  if (tab->map) {
-    // Bulk replacement invalidates Scintilla styling and the cached document
-    // preview. Rebuild both after the format command has fully unwound, just
-    // like file open/reload, so the map cannot cache an unstyled white frame.
-    PostMessageW(window_, kDocumentMapRefreshMessage,
-                 reinterpret_cast<WPARAM>(tab->view),
-                 reinterpret_cast<LPARAM>(tab->map));
-  }
+  replace_editor_range(*tab, target_start, target_end, formatted.text,
+                       DocumentMutationOrigin::Format);
 }
 
 bool EditorWindow::try_emmet(HWND editor, const bool backwards) {
@@ -2573,8 +2340,8 @@ bool EditorWindow::try_emmet(HWND editor, const bool backwards) {
                                                         : (tab->document.language == "xml" ? "xml" : "html");
   EmmetExpansion expansion = emmet_.expand(std::string_view(text).substr(start, caret - start), syntax);
   if (!expansion.ok || expansion.text.empty()) return false;
-  sci(editor, SCI_BEGINUNDOACTION); sci(editor, SCI_SETTARGETSTART, start); sci(editor, SCI_SETTARGETEND, caret);
-  sci(editor, SCI_REPLACETARGET, expansion.text.size(), pointer_param(expansion.text.data())); sci(editor, SCI_ENDUNDOACTION);
+  replace_editor_range(*tab, start, caret, expansion.text,
+                       DocumentMutationOrigin::Emmet);
   tab->snippet_fields = std::move(expansion.fields); tab->snippet_index = 0;
   for (auto& field : tab->snippet_fields) field.start += start;
   if (!tab->snippet_fields.empty()) {
@@ -2600,11 +2367,16 @@ void EditorWindow::on_notify(const NMHDR& notification) {
       notification.code == SCN_UPDATEUI ||
       notification.code == SCN_MODIFIED) {
     bool handled = false;
-    for (auto& tab : documents_) if (tab.view == notification.hwndFrom) {
+    for (auto& tab : tab_controller_) if (tab.view == notification.hwndFrom) {
+      const bool scoped_mutation = active_mutation_tab_ == &tab;
+      const DocumentMutationOrigin origin =
+          scoped_mutation ? active_mutation_origin_
+                          : DocumentMutationOrigin::User;
+      const DocumentMutationPolicy policy = mutation_policy(origin);
       if (notification.code == SCN_SAVEPOINTLEFT) tab.document.dirty = true;
       if (notification.code == SCN_SAVEPOINTREACHED) tab.document.dirty = false;
       if (notification.code == SCN_MODIFIED &&
-          !tab.snippet_fields.empty()) {
+          !policy.reset_snippet && !tab.snippet_fields.empty()) {
         const auto& changed =
             reinterpret_cast<const SCNotification&>(notification);
         const bool inserted =
@@ -2620,8 +2392,20 @@ void EditorWindow::on_notify(const NMHDR& notification) {
           if (tab.snippet_fields.empty()) tab.snippet_index = 0;
         }
       }
-      if (tab.map && notification.code == SCN_MODIFIED) {
-        DocumentMap::content_changed(tab.map, tab.view);
+      if (tab.map && notification.code == SCN_MODIFIED &&
+          !scoped_mutation) {
+        const auto& changed =
+            reinterpret_cast<const SCNotification&>(notification);
+        constexpr int kMapContentChanges =
+            SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT | SC_MOD_CHANGESTYLE;
+        if (changed.position >= 0 &&
+            (changed.modificationType & kMapContentChanges) != 0) {
+          const auto first_line = static_cast<std::size_t>(
+              sci(tab.view, SCI_LINEFROMPOSITION,
+                  static_cast<WPARAM>(changed.position)));
+          DocumentMap::content_changed_from_line(
+              tab.map, tab.view, first_line);
+        }
       } else if (tab.map && notification.code == SCN_UPDATEUI) {
         DocumentMap::sync(tab.map, tab.view);
       }
@@ -2629,7 +2413,7 @@ void EditorWindow::on_notify(const NMHDR& notification) {
       break;
     }
     if (handled && notification.code == SCN_MODIFIED &&
-        !search_hits_.empty()) {
+        !active_mutation_tab_ && !search_hits_.empty()) {
       const auto& changed =
           reinterpret_cast<const SCNotification&>(notification);
       if ((changed.modificationType &
@@ -2658,8 +2442,7 @@ void EditorWindow::on_command(const int command, const int notification,
   if ((control == find_text_ || control == replace_text_) &&
       notification == EN_CHANGE) {
     if (!search_hits_.empty()) clear_find_all_results();
-    search_thread_.request_stop();
-    ++search_generation_;
+    search_.cancel();
   }
   if (command == IDC_SEARCH_RESULTS) {
     if (notification == LBN_DBLCLK) {
@@ -2675,79 +2458,7 @@ void EditorWindow::on_command(const int command, const int notification,
       apply_language(*tab, language_menu_ids_[command - kLanguageFirst]);
     return;
   }
-  switch (command) {
-    case IDM_FILE_NEW: add_empty_tab(); break;
-    case IDM_FILE_OPEN: { const auto path = choose_open_file(); if (!path.empty()) open_file(path); break; }
-    case IDM_FILE_SAVE: if (tab) save_tab(*tab); break;
-    case IDM_FILE_SAVE_AS: if (tab) save_tab(*tab, true); break;
-    case IDM_FILE_CLOSE: close_tab(active_index()); break;
-    case IDM_FILE_EXIT: PostMessageW(window_, WM_CLOSE, 0, 0); break;
-    case IDM_ENCODING_UTF8: reopen_active({EncodingKind::Utf8, CP_UTF8, false}); break;
-    case IDM_ENCODING_UTF8_BOM: reopen_active({EncodingKind::Utf8, CP_UTF8, true}); break;
-    case IDM_ENCODING_UTF16LE: reopen_active({EncodingKind::Utf16Le, 1200, true}); break;
-    case IDM_ENCODING_UTF16BE: reopen_active({EncodingKind::Utf16Be, 1201, true}); break;
-    case IDM_ENCODING_CP1251: reopen_active({EncodingKind::WindowsCodePage, 1251, false}); break;
-    case IDM_ENCODING_CP866: reopen_active({EncodingKind::WindowsCodePage, 866, false}); break;
-    case IDM_ENCODING_CP1252: reopen_active({EncodingKind::WindowsCodePage, 1252, false}); break;
-    case IDM_EDIT_UNDO:
-      if (tab && editable(*tab) && sci(tab->view, SCI_CANUNDO))
-        sci(tab->view, SCI_UNDO);
-      break;
-    case IDM_EDIT_REDO:
-      if (tab && editable(*tab) && sci(tab->view, SCI_CANREDO))
-        sci(tab->view, SCI_REDO);
-      break;
-    case IDM_EDIT_CUT: if (tab && editable(*tab)) sci(tab->view, SCI_CUT); break;
-    case IDM_EDIT_COPY: if (tab && editable(*tab)) sci(tab->view, SCI_COPY); break;
-    case IDM_EDIT_PASTE: if (tab && editable(*tab)) sci(tab->view, SCI_PASTE); break;
-    case IDM_EDIT_SELECT_ALL: if (tab && editable(*tab)) sci(tab->view, SCI_SELECTALL); break;
-    case IDM_SEARCH_FIND: show_search(false); break;
-    case IDM_SEARCH_REPLACE: show_search(true); break;
-    case IDM_SEARCH_NEXT: case IDC_FIND_NEXT: find_next(); break;
-    case IDC_FIND_ALL: find_all(); break;
-    case IDC_REPLACE_ALL: replace_all_open_tabs(); break;
-    case IDC_REPLACE_ONE: replace_one(); break;
-    case IDC_BANNER_RELOAD: reload_active(); break;
-    case IDC_BANNER_KEEP: keep_external_active(); break;
-    case IDM_VIEW_DOCUMENT_MAP:
-      settings_.show_document_map = !settings_.show_document_map;
-      save_settings(settings_);
-      refresh_view_menu_state();
-      update_layout();
-      break;
-    case IDM_VIEW_HEX:
-      if (!tab || !tab->document.has_path() || tab->document.dirty ||
-          tab->document.external_diverged) {
-        MessageBeep(MB_ICONINFORMATION);
-        MessageBoxW(
-            window_,
-            tr(L"Переключение Hex/ASCII доступно только для сохранённого "
-               L"файла без локальных или внешних изменений.",
-               L"Hex/ASCII switching is available only for a saved file "
-                L"without local or external changes."),
-            LISTOPAD_PRODUCT_NAME, MB_OK | MB_ICONINFORMATION);
-      } else {
-        switch_tab_view(*tab, tab->view_kind == ViewKind::Hex
-                                  ? ViewKind::Text
-                                  : ViewKind::Hex);
-      }
-      break;
-    case IDM_TOOLS_FORMAT: format_active(); break;
-    case IDM_TOOLS_REGISTER:
-      MessageBoxW(window_, register_classic_context_menu(settings_.ui_language)
-                               ? tr(L"Пункт контекстного меню добавлен.", L"Context menu command registered.")
-                               : tr(L"Не удалось добавить пункт контекстного меню.", L"Unable to register context menu command."),
-                  LISTOPAD_PRODUCT_NAME, MB_OK); break;
-    case IDM_TOOLS_UNREGISTER:
-      MessageBoxW(window_, unregister_classic_context_menu()
-                               ? tr(L"Пункт контекстного меню удалён.", L"Context menu command removed.")
-                               : tr(L"Не удалось удалить пункт контекстного меню.", L"Unable to unregister context menu command."),
-                  LISTOPAD_PRODUCT_NAME, MB_OK); break;
-    case IDM_HELP_ABOUT:
-      MessageBoxW(window_, L"Listopad++ " LISTOPAD_VERSION_WSTRING L"\n\nFast offline Windows text editor\nScintilla · Lexilla · PCRE2 · Emmet",
-                  LISTOPAD_PRODUCT_NAME, MB_OK | MB_ICONINFORMATION); break;
-    default: break;
-  }
+  (void)command_controller_.dispatch(*this, command);
 }
 
 void EditorWindow::update_position_status(const Tab& tab) {
@@ -2767,14 +2478,16 @@ void EditorWindow::update_position_status(const Tab& tab) {
 
 void EditorWindow::update_ui() {
   Tab* tab = active_tab(); if (!tab) return;
-  for (int index = 0; index < static_cast<int>(documents_.size()); ++index) {
-    std::wstring title = documents_[index].document.title;
-    if (documents_[index].document.dirty) title += L" *";
-    if (documents_[index].document.external_diverged) title += L" !";
+  for (int index = 0; index < static_cast<int>(tab_controller_.size()); ++index) {
+    std::wstring title = tab_controller_[index].document.title;
+    if (tab_controller_[index].document.dirty) title += L" *";
+    if (tab_controller_[index].document.external_diverged) title += L" !";
     title = fit_tab_title(std::move(title));
     TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = title.data(); TabCtrl_SetItem(tabs_, index, &item);
   }
   const bool show_external_notice = tab->external_notice_pending;
+  layout_controller_.state().banner_visible = show_external_notice;
+  apply_search_visibility();
   if (show_external_notice) {
     SetWindowTextW(banner_, tr(L"Файл изменён другой программой",
                                L"The file was changed by another program"));

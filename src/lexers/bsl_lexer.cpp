@@ -101,9 +101,24 @@ void classify_identifier(StyleContext& context, WordList* keyword_lists[]) {
   }
 }
 
-void colourise_bsl(Sci_PositionU start, const Sci_Position length, const int initial_style,
+void colourise_bsl(Sci_PositionU requested_start,
+                   const Sci_Position requested_length,
+                   const int /*initial_style*/,
                    WordList* keyword_lists[], Accessor& styler) {
-  StyleContext context(start, length, initial_style, styler);
+  const Sci_Position requested_end =
+      static_cast<Sci_Position>(requested_start) + requested_length;
+  const Sci_Position start =
+      styler.LineStart(styler.GetLine(static_cast<Sci_Position>(requested_start)));
+  const Sci_Position length = (std::max)(Sci_Position{}, requested_end - start);
+  // Rewind to a physical line boundary, but preserve a state that legitimately
+  // crosses it (notably a multi-line string). A line comment styles the text
+  // before the newline, so the newline itself already provides BslDefault.
+  const int restored_style =
+      start == 0
+          ? BslDefault
+          : static_cast<unsigned char>(styler.StyleAt(start - 1));
+  StyleContext context(static_cast<Sci_PositionU>(start), length,
+                       restored_style, styler);
   for (; context.More(); context.Forward()) {
     switch (context.state) {
       case BslComment:

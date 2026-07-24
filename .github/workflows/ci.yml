@@ -29,5 +29,31 @@ jobs:
         run: ./scripts/build.ps1 -Preset debug
       - name: Build and test Release
         run: ./scripts/build.ps1 -Preset release
+      - name: Report performance budgets
+        run: ./build/release/listopad_benchmarks.exe
+      - name: GUI smoke test
+        run: ./scripts/gui-smoke.ps1 -Executable ./build/release/ListopadPP.exe
+      - name: Upload GUI smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-smoke-${{ github.run_id }}
+          path: build/gui-smoke/*.png
+          if-no-files-found: warn
       - name: Check third-party licenses
         run: ./scripts/check-licenses.ps1 -BuildDirectory ./build/release
+
+  windows-asan:
+    name: Windows x64 AddressSanitizer
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Ninja
+        run: choco install ninja --no-progress -y
+      - name: Build and test with AddressSanitizer
+        env:
+          ASAN_OPTIONS: halt_on_error=1
+        run: ./scripts/build.ps1 -Preset asan

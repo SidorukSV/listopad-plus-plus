@@ -149,6 +149,37 @@ Sci_Position find_closing_style(const char* text, const Sci_Position length,
   return length;
 }
 
+Sci_Position expand_start_for_embedded_css(Scintilla::IDocument* document,
+                                           const char* text,
+                                           const Sci_Position document_length,
+                                           const Sci_Position line_start) {
+  for (Sci_Position position = 0; position + 6 <= document_length; ++position) {
+    if (text[position] != '<' ||
+        !ascii_equal_at(text, document_length, position, "<style") ||
+        !tag_boundary(position + 6 < document_length ? text[position + 6]
+                                                     : '\0')) {
+      continue;
+    }
+    const unsigned char tag_style =
+        static_cast<unsigned char>(document->StyleAt(position + 1));
+    if (tag_style != SCE_H_TAG && tag_style != SCE_H_TAGUNKNOWN) continue;
+
+    const Sci_Position content_start =
+        tag_end(text, document_length, position + 6);
+    const Sci_Position content_end =
+        find_closing_style(text, document_length, content_start);
+    const Sci_Position closing_end =
+        content_end < document_length
+            ? tag_end(text, document_length, content_end + 7)
+            : document_length;
+    if (line_start >= content_start && line_start < closing_end) {
+      return position;
+    }
+    position = content_end;
+  }
+  return line_start;
+}
+
 class HtmlCssLexer final : public Scintilla::ILexer5 {
  public:
   HtmlCssLexer() : html_(CreateLexer("hypertext")), css_(CreateLexer("css")) {
@@ -187,12 +218,19 @@ class HtmlCssLexer final : public Scintilla::ILexer5 {
     const Sci_Position requested_start =
         (std::min)(document_length, static_cast<Sci_Position>(start));
     const Sci_Position requested_end = (std::min)(document_length, requested_start + length);
+    const char* text = document->BufferPointer();
     // Scintilla may ask to recolour from the middle of a tag after an edit. The
     // stock HTML lexer expects the state immediately before its start position;
     // rewinding to the physical line preserves that context and prevents the
     // rest of the tag (and following tags) from falling back to default text.
-    const Sci_Position expanded_start = document->LineStart(
+    Sci_Position expanded_start = document->LineStart(
         document->LineFromPosition(requested_start));
+    // Embedded CSS replaces the HTML lexer's raw-text styles, so the style
+    // immediately before a later physical line cannot restore the underlying
+    // HTML state. If the line begins inside a <style> body or its closing tag,
+    // replay the owning opening tag as the nearest reliable checkpoint.
+    expanded_start = expand_start_for_embedded_css(
+        document, text, document_length, expanded_start);
     if (expanded_start > 0) {
       initial_style = static_cast<unsigned char>(
           document->StyleAt(expanded_start - 1));
@@ -206,7 +244,6 @@ class HtmlCssLexer final : public Scintilla::ILexer5 {
                requested_end - expanded_start, initial_style, document);
     if (!css_) return;
 
-    const char* text = document->BufferPointer();
     for (Sci_Position position = 0; position + 6 <= document_length; ++position) {
       if (text[position] != '<' || !ascii_equal_at(text, document_length, position, "<style") ||
           !tag_boundary(position + 6 < document_length ? text[position + 6] : '\0')) continue;
@@ -214,8 +251,10 @@ class HtmlCssLexer final : public Scintilla::ILexer5 {
       if (tag_style != SCE_H_TAG && tag_style != SCE_H_TAGUNKNOWN) continue;
       const Sci_Position content_start = tag_end(text, document_length, position + 6);
       const Sci_Position content_end = find_closing_style(text, document_length, content_start);
-      if (content_start < requested_end && content_end > expanded_start &&
-          content_end > content_start) {
+      // LexHTML may rewind farther than the start it was given while restoring
+      // malformed-tag state. Reapply every CSS overlay after it runs so an
+      // earlier, otherwise untouched <style> block cannot lose its colours.
+      if (content_end > content_start) {
         CssSubDocument css_document(document, content_start, content_end - content_start);
         css_->Lex(0, content_end - content_start, SCE_CSS_DEFAULT, &css_document);
       }
