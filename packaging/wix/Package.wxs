@@ -22,7 +22,7 @@
       <Shortcut Id="ListopadDesktopShortcut" Name="Listopad++"
                 Description="Fast offline text editor"
                 Target="[INSTALLFOLDER]ListopadPP.exe" WorkingDirectory="INSTALLFOLDER" />
-      <RegistryValue Root="HKLM" Key="Software\Listopad++" Name="DesktopShortcut"
+      <RegistryValue Root="HKCU" Key="Software\Listopad++" Name="DesktopShortcut"
                      Type="integer" Value="1" KeyPath="yes" />
     </Component>
 
@@ -34,7 +34,7 @@
         <File Id="ListopadPPExe" Source="$(var.StageDir)\ListopadPP.exe" KeyPath="yes">
           <Shortcut Id="ListopadStartMenuShortcut" Directory="ProgramMenuFolder"
                     Name="Listopad++" Description="Fast offline text editor"
-                    WorkingDirectory="INSTALLFOLDER" Advertise="no" />
+                    WorkingDirectory="INSTALLFOLDER" Advertise="yes" />
         </File>
       </Component>
       <Component Bitness="always64">
