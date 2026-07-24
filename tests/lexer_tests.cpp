@@ -129,6 +129,20 @@ class TestDocument final : public Scintilla::IDocument {
     return static_cast<unsigned char>(styles_[position]);
   }
 
+  Sci_Position position_of(const std::string& token) const {
+    const std::size_t position = text_.find(token);
+    REQUIRE(position != std::string::npos);
+    return static_cast<Sci_Position>(position);
+  }
+
+  void clear_styles_from(const Sci_Position position) {
+    REQUIRE(position >= 0);
+    REQUIRE(position <= Length());
+    std::fill(styles_.begin() + position, styles_.end(), 0);
+  }
+
+  Sci_Position styling_position() const { return styling_position_; }
+
  private:
   static void ensure_line(std::vector<int>& values, const Sci_Position line, const int initial) {
     if (line >= 0 && static_cast<std::size_t>(line) >= values.size())
@@ -186,5 +200,36 @@ TEST_CASE("HTML lexer keeps markup, embedded CSS, and JavaScript styles separate
   CHECK(css_style >= listopad::kEmbeddedCssStyleBase);
   CHECK(css_style != SCE_H_DOUBLESTRING);
   CHECK(document.style_at("const") == SCE_HJ_KEYWORD);
+  CHECK(document.styling_position() == document.Length());
+  lexer->Release();
+}
+
+TEST_CASE("HTML lexer recovers when incremental styling starts inside a tag") {
+  TestDocument document(
+      "<head>\n"
+      "  <style>\n"
+      "    .card { color: red; }\n"
+      "  </style>\n"
+      "</head>\n"
+      "<body>\n"
+      "  <helmet>\n"
+      "    <link rel=\"preconnect\" href=\"https://example.test\">\n"
+      "  </helmet>\n"
+      "</body>\n");
+  Scintilla::ILexer5* lexer = listopad::create_html_css_lexer();
+  REQUIRE(lexer);
+  lexer->Lex(0, document.Length(), SCE_H_DEFAULT, &document);
+
+  const Sci_Position helmet = document.position_of("<helmet>");
+  document.clear_styles_from(helmet);
+  lexer->Lex(static_cast<Sci_PositionU>(helmet + 3),
+             document.Length() - helmet - 3, SCE_H_DEFAULT, &document);
+
+  CHECK((document.style_at("helmet") == SCE_H_TAG ||
+         document.style_at("helmet") == SCE_H_TAGUNKNOWN));
+  CHECK(document.style_at("link") == SCE_H_TAG);
+  CHECK(document.style_at("body") == SCE_H_TAG);
+  const unsigned char css_style = document.style_at("color");
+  CHECK(css_style >= listopad::kEmbeddedCssStyleBase);
   lexer->Release();
 }

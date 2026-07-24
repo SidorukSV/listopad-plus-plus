@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.29)
-set(LISTOPAD_VERSION "0.1.4" CACHE STRING "Listopad++ semantic version")
+set(LISTOPAD_VERSION "0.1.5" CACHE STRING "Listopad++ semantic version")
 project(ListopadPP VERSION "${LISTOPAD_VERSION}" LANGUAGES C CXX RC)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -113,6 +113,7 @@ if(LISTOPAD_BUILD_TESTS)
   find_package(Catch2 3 CONFIG REQUIRED)
   add_executable(listopad_tests
     tests/command_line_tests.cpp
+    tests/document_map_tests.cpp
     tests/emmet_tests.cpp
     tests/encoding_tests.cpp
     tests/file_io_tests.cpp

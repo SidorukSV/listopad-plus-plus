@@ -1,5 +1,7 @@
 #include "document_map.h"
 
+#include "listopad/document_map_geometry.h"
+
 #include <Scintilla.h>
 #include <windowsx.h>
 
@@ -12,7 +14,7 @@ namespace {
 
 constexpr wchar_t kClassName[] = L"ListopadPPDocumentMap";
 constexpr int kHorizontalPadding = 4;
-constexpr int kPreviewColumns = 160;
+constexpr int kPreviewColumns = 112;
 
 struct State {
   HWND editor{nullptr};
@@ -49,12 +51,12 @@ void navigate_to_point(const HWND map, const State& state, const int y) {
   const auto line_count =
       std::max<sptr_t>(1, static_cast<sptr_t>(
                               sci(state.editor, SCI_GETLINECOUNT)));
+  const DocumentMapGeometry geometry(
+      height, static_cast<std::size_t>(line_count));
   const int clamped_y =
       std::clamp(y - static_cast<int>(client.top), 0, height - 1);
-  const auto document_line = std::clamp<sptr_t>(
-      static_cast<sptr_t>(
-          static_cast<long double>(clamped_y) * line_count / height),
-      0, line_count - 1);
+  const auto document_line =
+      static_cast<sptr_t>(geometry.line_at(clamped_y));
   const auto visible_line = std::max<sptr_t>(
       0, static_cast<sptr_t>(
              sci(state.editor, SCI_VISIBLEFROMDOCLINE, document_line)));
@@ -65,53 +67,65 @@ void navigate_to_point(const HWND map, const State& state, const int y) {
   SetFocus(state.editor);
 }
 
-bool line_geometry(const HWND editor, const sptr_t line, int& indentation,
-                   int& end_column, COLORREF& colour) {
-  const auto line_start =
-      static_cast<sptr_t>(sci(editor, SCI_POSITIONFROMLINE, line));
-  const auto indentation_position =
-      static_cast<sptr_t>(sci(editor, SCI_GETLINEINDENTPOSITION, line));
-  const auto line_end =
-      static_cast<sptr_t>(sci(editor, SCI_GETLINEENDPOSITION, line));
-  if (line_start < 0 || indentation_position < 0 ||
-      line_end <= indentation_position) {
-    return false;
-  }
-  indentation = std::max(
-      0, static_cast<int>(sci(editor, SCI_GETCOLUMN,
-                              static_cast<WPARAM>(indentation_position))));
-  end_column = std::max(
-      indentation + 1,
-      static_cast<int>(
-          sci(editor, SCI_GETCOLUMN, static_cast<WPARAM>(line_end))));
-  const int style = static_cast<int>(
-      sci(editor, SCI_GETSTYLEAT, static_cast<WPARAM>(indentation_position)));
-  colour = static_cast<COLORREF>(
-      sci(editor, SCI_STYLEGETFORE, static_cast<WPARAM>(style)));
-  return true;
-}
-
 void draw_preview_line(const HDC dc, const RECT& client, const HWND editor,
                        const sptr_t line, const int y, const int thickness) {
-  int indentation = 0;
-  int end_column = 0;
-  COLORREF colour{};
-  if (!line_geometry(editor, line, indentation, end_column, colour)) return;
+  const auto line_start =
+      static_cast<sptr_t>(sci(editor, SCI_POSITIONFROMLINE, line));
+  const auto line_end =
+      static_cast<sptr_t>(sci(editor, SCI_GETLINEENDPOSITION, line));
+  if (line_start < 0 || line_end <= line_start) return;
+  const auto preview_end = std::min<sptr_t>(
+      line_end, static_cast<sptr_t>(
+                    sci(editor, SCI_FINDCOLUMN, line, kPreviewColumns)));
   const int width = std::max(
       1L, client.right - client.left - kHorizontalPadding * 2);
-  const int first_column = std::min(indentation, kPreviewColumns - 1);
-  const int last_column =
-      std::clamp(end_column, first_column + 1, kPreviewColumns);
-  const int x1 = client.left + kHorizontalPadding +
-                 MulDiv(first_column, width, kPreviewColumns);
-  const int x2 = std::max(
-      x1 + 1, static_cast<int>(client.left) + kHorizontalPadding +
-                  MulDiv(last_column, width, kPreviewColumns));
-  SetDCPenColor(dc, colour);
-  for (int offset = 0; offset < thickness; ++offset) {
-    MoveToEx(dc, x1, y + offset, nullptr);
-    LineTo(dc, x2, y + offset);
+  sptr_t run_start = -1;
+  unsigned char run_style = 0;
+  const auto flush_run = [&](const sptr_t run_end) {
+    if (run_start < 0 || run_end <= run_start) return;
+    const int first_column = std::clamp(
+        static_cast<int>(sci(editor, SCI_GETCOLUMN, run_start)), 0,
+        kPreviewColumns - 1);
+    const int last_column = std::clamp(
+        static_cast<int>(sci(editor, SCI_GETCOLUMN, run_end)),
+        first_column + 1, kPreviewColumns);
+    RECT fragment{
+        client.left + kHorizontalPadding +
+            MulDiv(first_column, width, kPreviewColumns),
+        y,
+        client.left + kHorizontalPadding +
+            MulDiv(last_column, width, kPreviewColumns),
+        y + thickness};
+    fragment.right = std::max(fragment.left + 1, fragment.right);
+    SetDCBrushColor(
+        dc, static_cast<COLORREF>(
+                sci(editor, SCI_STYLEGETFORE,
+                    static_cast<WPARAM>(run_style))));
+    FillRect(dc, &fragment,
+             static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+  };
+
+  for (sptr_t position = line_start; position < preview_end; ++position) {
+    const unsigned char character = static_cast<unsigned char>(
+        sci(editor, SCI_GETCHARAT, static_cast<WPARAM>(position)));
+    const bool whitespace =
+        character == ' ' || character == '\t' || character == '\r' ||
+        character == '\n';
+    const auto style = static_cast<unsigned char>(
+        sci(editor, SCI_GETSTYLEAT, static_cast<WPARAM>(position)));
+    if (whitespace) {
+      flush_run(position);
+      run_start = -1;
+    } else if (run_start < 0) {
+      run_start = position;
+      run_style = style;
+    } else if (style != run_style) {
+      flush_run(position);
+      run_start = position;
+      run_style = style;
+    }
   }
+  flush_run(preview_end);
 }
 
 void draw_document_preview(const HDC dc, const RECT& client,
@@ -121,18 +135,19 @@ void draw_document_preview(const HDC dc, const RECT& client,
   const auto line_count =
       std::max<sptr_t>(1, static_cast<sptr_t>(
                               sci(state.editor, SCI_GETLINECOUNT)));
-  const HGDIOBJ previous_pen = SelectObject(dc, GetStockObject(DC_PEN));
-
-  if (line_count <= height) {
+  const DocumentMapGeometry geometry(
+      height, static_cast<std::size_t>(line_count));
+  if (!geometry.compressed()) {
+    // Keep short documents anchored to the top. Stretching every document
+    // line across the full map placed a one-line file in the vertical middle
+    // and made sparse files look disconnected from the editor.
+    const int thickness = std::max(1, geometry.line_height() - 1);
     for (sptr_t line = 0; line < line_count; ++line) {
-      const int top = client.top + static_cast<int>(
-          static_cast<long double>(line) * height / line_count);
-      const int bottom = client.top + static_cast<int>(
-          static_cast<long double>(line + 1) * height / line_count);
-      const int thickness = std::clamp(bottom - top - 1, 1, 2);
-      draw_preview_line(dc, client, state.editor, line,
-                        top + std::max(0, (bottom - top - thickness) / 2),
-                        thickness);
+      draw_preview_line(
+          dc, client, state.editor, line,
+          client.top +
+              geometry.line_top(static_cast<std::size_t>(line)),
+          thickness);
     }
   } else {
     for (int pixel = 0; pixel < height; ++pixel) {
@@ -145,7 +160,6 @@ void draw_document_preview(const HDC dc, const RECT& client,
                         client.top + pixel, 1);
     }
   }
-  SelectObject(dc, previous_pen);
 }
 
 void ensure_preview(const HDC reference, const RECT& client, State& state) {
@@ -167,9 +181,9 @@ void ensure_preview(const HDC reference, const RECT& client, State& state) {
   }
   const HGDIOBJ previous = SelectObject(preview_dc, state.preview);
   RECT preview_rect{0, 0, width, height};
-  SetDCBrushColor(preview_dc,
-                  state.dark ? RGB(30, 30, 30)
-                             : GetSysColor(COLOR_WINDOW));
+  const COLORREF background = static_cast<COLORREF>(
+      sci(state.editor, SCI_STYLEGETBACK, STYLE_DEFAULT));
+  SetDCBrushColor(preview_dc, background);
   FillRect(preview_dc, &preview_rect,
            static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
   draw_document_preview(preview_dc, preview_rect, state);
@@ -178,35 +192,14 @@ void ensure_preview(const HDC reference, const RECT& client, State& state) {
   state.preview_dirty = false;
 }
 
-void alpha_fill(const HDC destination, const RECT& rectangle,
-                const COLORREF colour, const BYTE alpha) {
-  HDC source = CreateCompatibleDC(destination);
-  HBITMAP pixel =
-      source ? CreateCompatibleBitmap(destination, 1, 1) : nullptr;
-  HGDIOBJ old_bitmap = nullptr;
-  if (source && pixel) {
-    old_bitmap = SelectObject(source, pixel);
-    SetDCBrushColor(source, colour);
-    RECT one{0, 0, 1, 1};
-    FillRect(source, &one,
-             static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
-    const BLENDFUNCTION blend{AC_SRC_OVER, 0, alpha, 0};
-    AlphaBlend(destination, rectangle.left, rectangle.top,
-               rectangle.right - rectangle.left,
-               rectangle.bottom - rectangle.top, source, 0, 0, 1, 1,
-               blend);
-  }
-  if (old_bitmap) SelectObject(source, old_bitmap);
-  if (pixel) DeleteObject(pixel);
-  if (source) DeleteDC(source);
-}
-
 void draw_viewport(const HDC dc, const RECT& client, const State& state) {
   if (!state.editor) return;
   const int height = std::max(1L, client.bottom - client.top);
   const auto line_count =
       std::max<sptr_t>(1, static_cast<sptr_t>(
                               sci(state.editor, SCI_GETLINECOUNT)));
+  const DocumentMapGeometry geometry(
+      height, static_cast<std::size_t>(line_count));
   const auto first_visible =
       static_cast<sptr_t>(sci(state.editor, SCI_GETFIRSTVISIBLELINE));
   const auto visible_count = std::max<sptr_t>(
@@ -221,24 +214,27 @@ void draw_viewport(const HDC dc, const RECT& client, const State& state) {
           static_cast<WPARAM>(first_visible + visible_count - 1))),
       first_document, line_count - 1);
 
-  int top = client.top + static_cast<int>(
-      static_cast<long double>(first_document) * height / line_count);
-  int bottom = client.top + static_cast<int>(std::ceil(
-      static_cast<long double>(last_document + 1) * height / line_count));
+  int top =
+      client.top +
+      geometry.line_top(static_cast<std::size_t>(first_document));
+  int bottom =
+      client.top +
+      geometry.line_bottom(static_cast<std::size_t>(last_document));
   bottom = std::max(bottom, top + 3);
   if (bottom > client.bottom) {
     top = std::max(client.top, client.bottom - (bottom - top));
     bottom = client.bottom;
   }
   RECT viewport{client.left, top, client.right, bottom};
-  const COLORREF fill =
-      state.dark ? RGB(62, 95, 135) : RGB(190, 215, 245);
   const COLORREF border =
       state.dark ? RGB(125, 170, 225) : RGB(62, 95, 135);
-  alpha_fill(dc, viewport, fill, 80);
   HBRUSH frame = CreateSolidBrush(border);
   if (frame) {
     FrameRect(dc, &viewport, frame);
+    InflateRect(&viewport, -1, -1);
+    if (viewport.right > viewport.left && viewport.bottom > viewport.top) {
+      FrameRect(dc, &viewport, frame);
+    }
     DeleteObject(frame);
   }
 }
@@ -249,45 +245,28 @@ void paint(const HWND window, State& state) {
   RECT client{};
   GetClientRect(window, &client);
   ensure_preview(target, client, state);
-  HDC buffer = CreateCompatibleDC(target);
-  HBITMAP bitmap = buffer ? CreateCompatibleBitmap(
-                                target, std::max(1L, client.right - client.left),
-                                std::max(1L, client.bottom - client.top))
-                          : nullptr;
-  HGDIOBJ previous_bitmap = nullptr;
-  HDC destination = target;
-  if (buffer && bitmap) {
-    previous_bitmap = SelectObject(buffer, bitmap);
-    destination = buffer;
-  }
 
   if (state.preview) {
     HDC preview_dc = CreateCompatibleDC(target);
     if (preview_dc) {
       const HGDIOBJ previous = SelectObject(preview_dc, state.preview);
-      BitBlt(destination, client.left, client.top,
+      BitBlt(target, client.left, client.top,
              client.right - client.left, client.bottom - client.top,
              preview_dc, 0, 0, SRCCOPY);
       SelectObject(preview_dc, previous);
       DeleteDC(preview_dc);
     }
   } else {
-    SetDCBrushColor(destination,
+    SetDCBrushColor(target,
                     state.dark ? RGB(30, 30, 30)
                                : GetSysColor(COLOR_WINDOW));
-    FillRect(destination, &client,
+    FillRect(target, &client,
              static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
   }
-  draw_viewport(destination, client, state);
-  if (destination == buffer) {
-    BitBlt(target, client.left, client.top, client.right - client.left,
-           client.bottom - client.top, buffer, client.left, client.top,
-           SRCCOPY);
-  }
-
-  if (previous_bitmap) SelectObject(buffer, previous_bitmap);
-  if (bitmap) DeleteObject(bitmap);
-  if (buffer) DeleteDC(buffer);
+  // The cached preview is already an off-screen buffer. Drawing the viewport
+  // directly over that copy avoids allocating another full-size bitmap for
+  // every scroll event.
+  draw_viewport(target, client, state);
   EndPaint(window, &paint);
 }
 
@@ -303,7 +282,13 @@ LRESULT CALLBACK window_proc(const HWND window, const UINT message,
     delete state;
     SetWindowLongPtrW(window, GWLP_USERDATA, 0);
   } else if (message == WM_SIZE && state) {
-    discard_preview(*state);
+    const int width = LOWORD(lparam);
+    const int height = HIWORD(lparam);
+    // update_layout() may send WM_SIZE even when the map dimensions did not
+    // change. Keep the expensive document preview in that common case.
+    if (state->preview_width != width || state->preview_height != height) {
+      discard_preview(*state);
+    }
     InvalidateRect(window, nullptr, FALSE);
     return 0;
   } else if (message == WM_ERASEBKGND) {

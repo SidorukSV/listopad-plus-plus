@@ -8,11 +8,25 @@
 #include "listopad/shell_registration.h"
 
 #include <windows.h>
+#include <objbase.h>
 
 #include <iterator>
 #include <utility>
 
 namespace {
+class ComApartment final {
+ public:
+  ComApartment()
+      : initialized_(SUCCEEDED(CoInitializeEx(
+            nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE))) {}
+  ~ComApartment() {
+    if (initialized_) CoUninitialize();
+  }
+
+ private:
+  bool initialized_{false};
+};
+
 listopad::ipc::OpenFilesRequest make_request(const listopad::CommandLine& command) {
   listopad::ipc::OpenFilesRequest request;
   request.files = command.files;
@@ -34,6 +48,7 @@ HACCEL create_accelerators() {
 
 int WINAPI wWinMain(HINSTANCE module, HINSTANCE, wchar_t*, int show_command) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+  const ComApartment com_apartment;
   const listopad::CommandLine command = listopad::current_command_line();
   listopad::Settings settings = listopad::load_settings();
   if (command.shell_registration == listopad::ShellRegistration::Register)

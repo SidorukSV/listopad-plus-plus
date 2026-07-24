@@ -36,5 +36,8 @@ class EmmetEngine final {
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace listopad
+bool update_emmet_fields(std::vector<EmmetField>& fields,
+                         std::size_t active_index, std::size_t position,
+                         std::size_t length, bool insertion);
 
+}  // namespace listopad

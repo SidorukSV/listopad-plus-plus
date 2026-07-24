@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -32,7 +33,8 @@ class EditorWindow final {
 
   static constexpr UINT kOpenRequestMessage = WM_APP + 1;
   static constexpr UINT kExternalChangeMessage = WM_APP + 2;
- static constexpr UINT kSearchResultMessage = WM_APP + 3;
+  static constexpr UINT kSearchResultMessage = WM_APP + 3;
+  static constexpr UINT kDocumentMapRefreshMessage = WM_APP + 4;
 
  private:
   enum class ViewKind {
@@ -46,9 +48,17 @@ class EditorWindow final {
     ViewKind view_kind{ViewKind::Text};
     HWND view{nullptr};
     HWND map{nullptr};
+    HWND suspended_text_view{nullptr};
+    HWND suspended_text_map{nullptr};
     bool external_notice_pending{false};
     std::vector<EmmetField> snippet_fields;
     std::size_t snippet_index{0};
+  };
+
+  struct SearchHit {
+    int tab_index{-1};
+    std::size_t start{0};
+    std::size_t length{0};
   };
 
   struct MenuVisual {
@@ -68,6 +78,7 @@ class EditorWindow final {
   void on_command(int command, int notification, HWND control);
   void on_notify(const NMHDR& notification);
   void update_layout();
+  void update_position_status(const Tab& tab);
   void update_ui();
   void rebuild_menu();
   void prepare_menu_bar(HMENU menu);
@@ -113,9 +124,12 @@ class EditorWindow final {
   void format_active();
   void show_search(bool replace);
   void find_next();
+  void find_all();
   void replace_one();
   void replace_all_open_tabs();
   void handle_search_result(void* raw_result);
+  void clear_find_all_results();
+  void navigate_search_result(int result_index);
   std::filesystem::path choose_open_file();
   std::filesystem::path choose_save_file(const Tab& tab);
 
@@ -135,8 +149,10 @@ class EditorWindow final {
   HWND find_text_{nullptr};
   HWND replace_text_{nullptr};
   HWND find_button_{nullptr};
+  HWND find_all_button_{nullptr};
   HWND replace_button_{nullptr};
   HWND replace_all_button_{nullptr};
+  HWND search_results_{nullptr};
   HWND regex_check_{nullptr};
   HWND case_check_{nullptr};
   HWND all_tabs_check_{nullptr};
@@ -146,6 +162,8 @@ class EditorWindow final {
   HFONT editor_font_{nullptr};
   HFONT tab_font_{nullptr};
   HFONT icon_font_{nullptr};
+  HICON window_icon_large_{nullptr};
+  HICON window_icon_small_{nullptr};
   HANDLE icon_font_resource_{nullptr};
   HIMAGELIST toolbar_images_{nullptr};
   int dpi_{96};
@@ -161,6 +179,7 @@ class EditorWindow final {
   EmmetEngine emmet_;
   std::jthread search_thread_;
   std::uint64_t search_generation_{0};
+  std::vector<SearchHit> search_hits_;
   int pressed_close_tab_{-1};
   bool dark_{false};
 };
