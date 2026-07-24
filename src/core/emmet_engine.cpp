@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <limits>
 #include <mutex>
 
 namespace listopad {
@@ -111,6 +112,69 @@ EmmetExpansion EmmetEngine::expand(const std::string_view abbreviation,
   EmmetExpansion result = parse_fields(std::string(text, length));
   JS_FreeCString(impl_->context, text); JS_FreeValue(impl_->context, value);
   return result;
+}
+
+bool update_emmet_fields(std::vector<EmmetField>& fields,
+                         const std::size_t active_index,
+                         const std::size_t position,
+                         const std::size_t length, const bool insertion) {
+  const auto invalidate = [&fields] {
+    fields.clear();
+    return false;
+  };
+  if (fields.empty() || active_index >= fields.size()) return invalidate();
+  if (length == 0) return true;
+
+  const EmmetField& active = fields[active_index];
+  if (active.length >
+      std::numeric_limits<std::size_t>::max() - active.start) {
+    return invalidate();
+  }
+  const std::size_t active_end = active.start + active.length;
+
+  if (insertion) {
+    if (position < active.start || position > active_end ||
+        length > std::numeric_limits<std::size_t>::max() - active.length) {
+      return invalidate();
+    }
+    for (std::size_t index = 0; index < fields.size(); ++index) {
+      if (index != active_index && fields[index].start >= position &&
+          length >
+              std::numeric_limits<std::size_t>::max() -
+                  fields[index].start) {
+        return invalidate();
+      }
+    }
+    for (std::size_t index = 0; index < fields.size(); ++index) {
+      if (index != active_index && fields[index].start >= position) {
+        fields[index].start += length;
+      }
+    }
+    fields[active_index].length += length;
+    return true;
+  }
+
+  if (position > std::numeric_limits<std::size_t>::max() - length) {
+    return invalidate();
+  }
+  const std::size_t edit_end = position + length;
+  if (position < active.start || edit_end > active_end) {
+    return invalidate();
+  }
+  for (std::size_t index = 0; index < fields.size(); ++index) {
+    if (index == active_index) continue;
+    if (fields[index].start > position &&
+        fields[index].start < edit_end) {
+      return invalidate();
+    }
+  }
+  for (std::size_t index = 0; index < fields.size(); ++index) {
+    if (index != active_index && fields[index].start >= edit_end) {
+      fields[index].start -= length;
+    }
+  }
+  fields[active_index].length -= length;
+  return true;
 }
 
 }  // namespace listopad

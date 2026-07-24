@@ -2536,7 +2536,16 @@ void EditorWindow::format_active() {
   const std::size_t target_end = end > start ? end : full.size();
   sci(tab->view, SCI_BEGINUNDOACTION); sci(tab->view, SCI_SETTARGETSTART, target_start);
   sci(tab->view, SCI_SETTARGETEND, target_end);
-  sci(tab->view, SCI_REPLACETARGET, formatted.text.size(), pointer_param(formatted.text.data())); sci(tab->view, SCI_ENDUNDOACTION);
+  sci(tab->view, SCI_REPLACETARGET, formatted.text.size(), pointer_param(formatted.text.data()));
+  sci(tab->view, SCI_ENDUNDOACTION);
+  if (tab->map) {
+    // Bulk replacement invalidates Scintilla styling and the cached document
+    // preview. Rebuild both after the format command has fully unwound, just
+    // like file open/reload, so the map cannot cache an unstyled white frame.
+    PostMessageW(window_, kDocumentMapRefreshMessage,
+                 reinterpret_cast<WPARAM>(tab->view),
+                 reinterpret_cast<LPARAM>(tab->map));
+  }
 }
 
 bool EditorWindow::try_emmet(HWND editor, const bool backwards) {
@@ -2594,6 +2603,23 @@ void EditorWindow::on_notify(const NMHDR& notification) {
     for (auto& tab : documents_) if (tab.view == notification.hwndFrom) {
       if (notification.code == SCN_SAVEPOINTLEFT) tab.document.dirty = true;
       if (notification.code == SCN_SAVEPOINTREACHED) tab.document.dirty = false;
+      if (notification.code == SCN_MODIFIED &&
+          !tab.snippet_fields.empty()) {
+        const auto& changed =
+            reinterpret_cast<const SCNotification&>(notification);
+        const bool inserted =
+            (changed.modificationType & SC_MOD_INSERTTEXT) != 0;
+        const bool deleted =
+            (changed.modificationType & SC_MOD_DELETETEXT) != 0;
+        if (changed.position >= 0 && changed.length > 0 &&
+            (inserted || deleted)) {
+          update_emmet_fields(
+              tab.snippet_fields, tab.snippet_index,
+              static_cast<std::size_t>(changed.position),
+              static_cast<std::size_t>(changed.length), inserted);
+          if (tab.snippet_fields.empty()) tab.snippet_index = 0;
+        }
+      }
       if (tab.map && notification.code == SCN_MODIFIED) {
         DocumentMap::content_changed(tab.map, tab.view);
       } else if (tab.map && notification.code == SCN_UPDATEUI) {

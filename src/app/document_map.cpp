@@ -13,6 +13,7 @@ namespace {
 constexpr wchar_t kClassName[] = L"ListopadPPDocumentMap";
 constexpr int kHorizontalPadding = 4;
 constexpr int kPreviewColumns = 112;
+constexpr int kMaximumPreviewLineHeight = 4;
 
 struct State {
   HWND editor{nullptr};
@@ -134,15 +135,17 @@ void draw_document_preview(const HDC dc, const RECT& client,
       std::max<sptr_t>(1, static_cast<sptr_t>(
                               sci(state.editor, SCI_GETLINECOUNT)));
   if (line_count <= height) {
+    // Keep short documents anchored to the top. Stretching every document
+    // line across the full map placed a one-line file in the vertical middle
+    // and made sparse files look disconnected from the editor.
+    const int line_height = std::clamp(
+        height / static_cast<int>(line_count), 1,
+        kMaximumPreviewLineHeight);
+    const int thickness = std::max(1, line_height - 1);
     for (sptr_t line = 0; line < line_count; ++line) {
-      const int top = client.top + static_cast<int>(
-          static_cast<long double>(line) * height / line_count);
-      const int bottom = client.top + static_cast<int>(
-          static_cast<long double>(line + 1) * height / line_count);
-      const int thickness = std::clamp(bottom - top - 2, 2, 4);
-      draw_preview_line(dc, client, state.editor, line,
-                        top + std::max(0, (bottom - top - thickness) / 2),
-                        thickness);
+      draw_preview_line(
+          dc, client, state.editor, line,
+          client.top + static_cast<int>(line) * line_height, thickness);
     }
   } else {
     for (int pixel = 0; pixel < height; ++pixel) {
