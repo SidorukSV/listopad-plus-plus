@@ -5,6 +5,11 @@
 
 ## [Не выпущено]
 
+## [0.1.5] — 2026-07-24
+
+Выпуск исправлений поиска, карты документа, истории редактирования и
+подсветки HTML.
+
 ### Добавлено
 
 - режим «Найти всё» с подсветкой всех совпадений, списком результатов,
@@ -210,3 +215,4 @@
 [0.1.1]: https://github.com/SidorukSV/listopad-plus-plus/releases/tag/v0.1.1
 [0.1.2]: https://github.com/SidorukSV/listopad-plus-plus/releases/tag/v0.1.2
 [0.1.4]: https://github.com/SidorukSV/listopad-plus-plus/releases/tag/v0.1.4
+[0.1.5]: https://github.com/SidorukSV/listopad-plus-plus/releases/tag/v0.1.5
