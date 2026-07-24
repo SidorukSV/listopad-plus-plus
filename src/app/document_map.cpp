@@ -236,45 +236,28 @@ void paint(const HWND window, State& state) {
   RECT client{};
   GetClientRect(window, &client);
   ensure_preview(target, client, state);
-  HDC buffer = CreateCompatibleDC(target);
-  HBITMAP bitmap = buffer ? CreateCompatibleBitmap(
-                                target, std::max(1L, client.right - client.left),
-                                std::max(1L, client.bottom - client.top))
-                          : nullptr;
-  HGDIOBJ previous_bitmap = nullptr;
-  HDC destination = target;
-  if (buffer && bitmap) {
-    previous_bitmap = SelectObject(buffer, bitmap);
-    destination = buffer;
-  }
 
   if (state.preview) {
     HDC preview_dc = CreateCompatibleDC(target);
     if (preview_dc) {
       const HGDIOBJ previous = SelectObject(preview_dc, state.preview);
-      BitBlt(destination, client.left, client.top,
+      BitBlt(target, client.left, client.top,
              client.right - client.left, client.bottom - client.top,
              preview_dc, 0, 0, SRCCOPY);
       SelectObject(preview_dc, previous);
       DeleteDC(preview_dc);
     }
   } else {
-    SetDCBrushColor(destination,
+    SetDCBrushColor(target,
                     state.dark ? RGB(30, 30, 30)
                                : GetSysColor(COLOR_WINDOW));
-    FillRect(destination, &client,
+    FillRect(target, &client,
              static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
   }
-  draw_viewport(destination, client, state);
-  if (destination == buffer) {
-    BitBlt(target, client.left, client.top, client.right - client.left,
-           client.bottom - client.top, buffer, client.left, client.top,
-           SRCCOPY);
-  }
-
-  if (previous_bitmap) SelectObject(buffer, previous_bitmap);
-  if (bitmap) DeleteObject(bitmap);
-  if (buffer) DeleteDC(buffer);
+  // The cached preview is already an off-screen buffer. Drawing the viewport
+  // directly over that copy avoids allocating another full-size bitmap for
+  // every scroll event.
+  draw_viewport(target, client, state);
   EndPaint(window, &paint);
 }
 
@@ -290,7 +273,13 @@ LRESULT CALLBACK window_proc(const HWND window, const UINT message,
     delete state;
     SetWindowLongPtrW(window, GWLP_USERDATA, 0);
   } else if (message == WM_SIZE && state) {
-    discard_preview(*state);
+    const int width = LOWORD(lparam);
+    const int height = HIWORD(lparam);
+    // update_layout() may send WM_SIZE even when the map dimensions did not
+    // change. Keep the expensive document preview in that common case.
+    if (state->preview_width != width || state->preview_height != height) {
+      discard_preview(*state);
+    }
     InvalidateRect(window, nullptr, FALSE);
     return 0;
   } else if (message == WM_ERASEBKGND) {

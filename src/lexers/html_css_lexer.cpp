@@ -221,6 +221,11 @@ class HtmlCssLexer final : public Scintilla::ILexer5 {
       }
       position = content_end;
     }
+    // Each CSS sub-document rewinds the parent's styling cursor to its own
+    // <style> body. Restore the end of the range requested by Scintilla;
+    // otherwise SCI_GETENDSTYLED remains inside the first CSS block and every
+    // scroll re-lexes the rest of the document.
+    document->StartStyling(requested_end);
   }
   void SCI_METHOD Fold(const Sci_PositionU start, const Sci_Position length, const int style,
                        Scintilla::IDocument* document) override {

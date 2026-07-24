@@ -78,6 +78,7 @@ class EditorWindow final {
   void on_command(int command, int notification, HWND control);
   void on_notify(const NMHDR& notification);
   void update_layout();
+  void update_position_status(const Tab& tab);
   void update_ui();
   void rebuild_menu();
   void prepare_menu_bar(HMENU menu);

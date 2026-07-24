@@ -2603,7 +2603,19 @@ void EditorWindow::on_notify(const NMHDR& notification) {
         clear_find_all_results();
       }
     }
-    if (handled && notification.code != SCN_MODIFIED) update_ui();
+    if (handled && notification.code != SCN_MODIFIED) {
+      if (notification.code == SCN_UPDATEUI) {
+        // Scrolling and caret movement only affect the map viewport and the
+        // position field. A full update_ui() also runs update_layout(), which
+        // needlessly resizes and repaints every child on each wheel step.
+        if (const Tab* tab = active_tab();
+            tab && tab->view == notification.hwndFrom) {
+          update_position_status(*tab);
+        }
+      } else {
+        update_ui();
+      }
+    }
   }
 }
 
@@ -2704,6 +2716,21 @@ void EditorWindow::on_command(const int command, const int notification,
   }
 }
 
+void EditorWindow::update_position_status(const Tab& tab) {
+  if (tab.view_kind != ViewKind::Text) return;
+  const auto position =
+      static_cast<sptr_t>(sci(tab.view, SCI_GETCURRENTPOS));
+  const auto line =
+      static_cast<sptr_t>(sci(tab.view, SCI_LINEFROMPOSITION, position));
+  const auto column =
+      static_cast<sptr_t>(sci(tab.view, SCI_GETCOLUMN, position));
+  const std::wstring location =
+      tr(L"Стр ", L"Ln ") + std::to_wstring(line + 1) +
+      tr(L", стлб ", L", Col ") + std::to_wstring(column + 1);
+  SendMessageW(status_, SB_SETTEXTW, 0,
+               pointer_param(location.c_str()));
+}
+
 void EditorWindow::update_ui() {
   Tab* tab = active_tab(); if (!tab) return;
   for (int index = 0; index < static_cast<int>(documents_.size()); ++index) {
@@ -2749,17 +2776,7 @@ void EditorWindow::update_ui() {
       break;
     }
     case ViewKind::Text: {
-      const auto position =
-          static_cast<sptr_t>(sci(tab->view, SCI_GETCURRENTPOS));
-      const auto line =
-          static_cast<sptr_t>(sci(tab->view, SCI_LINEFROMPOSITION, position));
-      const auto column =
-          static_cast<sptr_t>(sci(tab->view, SCI_GETCOLUMN, position));
-      const std::wstring location =
-          tr(L"Стр ", L"Ln ") + std::to_wstring(line + 1) +
-          tr(L", стлб ", L", Col ") + std::to_wstring(column + 1);
-      SendMessageW(status_, SB_SETTEXTW, 0,
-                   pointer_param(location.c_str()));
+      update_position_status(*tab);
       SendMessageW(status_, SB_SETTEXTW, 1, pointer_param(encoding.c_str()));
       SendMessageW(status_, SB_SETTEXTW, 2, pointer_param(eol.c_str()));
       SendMessageW(status_, SB_SETTEXTW, 3,

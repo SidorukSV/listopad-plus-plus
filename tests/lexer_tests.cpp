@@ -141,6 +141,8 @@ class TestDocument final : public Scintilla::IDocument {
     std::fill(styles_.begin() + position, styles_.end(), 0);
   }
 
+  Sci_Position styling_position() const { return styling_position_; }
+
  private:
   static void ensure_line(std::vector<int>& values, const Sci_Position line, const int initial) {
     if (line >= 0 && static_cast<std::size_t>(line) >= values.size())
@@ -198,6 +200,7 @@ TEST_CASE("HTML lexer keeps markup, embedded CSS, and JavaScript styles separate
   CHECK(css_style >= listopad::kEmbeddedCssStyleBase);
   CHECK(css_style != SCE_H_DOUBLESTRING);
   CHECK(document.style_at("const") == SCE_HJ_KEYWORD);
+  CHECK(document.styling_position() == document.Length());
   lexer->Release();
 }
 
