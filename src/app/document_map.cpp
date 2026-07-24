@@ -1,5 +1,7 @@
 #include "document_map.h"
 
+#include "listopad/document_map_geometry.h"
+
 #include <Scintilla.h>
 #include <windowsx.h>
 
@@ -13,7 +15,6 @@ namespace {
 constexpr wchar_t kClassName[] = L"ListopadPPDocumentMap";
 constexpr int kHorizontalPadding = 4;
 constexpr int kPreviewColumns = 112;
-constexpr int kMaximumPreviewLineHeight = 4;
 
 struct State {
   HWND editor{nullptr};
@@ -50,12 +51,12 @@ void navigate_to_point(const HWND map, const State& state, const int y) {
   const auto line_count =
       std::max<sptr_t>(1, static_cast<sptr_t>(
                               sci(state.editor, SCI_GETLINECOUNT)));
+  const DocumentMapGeometry geometry(
+      height, static_cast<std::size_t>(line_count));
   const int clamped_y =
       std::clamp(y - static_cast<int>(client.top), 0, height - 1);
-  const auto document_line = std::clamp<sptr_t>(
-      static_cast<sptr_t>(
-          static_cast<long double>(clamped_y) * line_count / height),
-      0, line_count - 1);
+  const auto document_line =
+      static_cast<sptr_t>(geometry.line_at(clamped_y));
   const auto visible_line = std::max<sptr_t>(
       0, static_cast<sptr_t>(
              sci(state.editor, SCI_VISIBLEFROMDOCLINE, document_line)));
@@ -134,18 +135,19 @@ void draw_document_preview(const HDC dc, const RECT& client,
   const auto line_count =
       std::max<sptr_t>(1, static_cast<sptr_t>(
                               sci(state.editor, SCI_GETLINECOUNT)));
-  if (line_count <= height) {
+  const DocumentMapGeometry geometry(
+      height, static_cast<std::size_t>(line_count));
+  if (!geometry.compressed()) {
     // Keep short documents anchored to the top. Stretching every document
     // line across the full map placed a one-line file in the vertical middle
     // and made sparse files look disconnected from the editor.
-    const int line_height = std::clamp(
-        height / static_cast<int>(line_count), 1,
-        kMaximumPreviewLineHeight);
-    const int thickness = std::max(1, line_height - 1);
+    const int thickness = std::max(1, geometry.line_height() - 1);
     for (sptr_t line = 0; line < line_count; ++line) {
       draw_preview_line(
           dc, client, state.editor, line,
-          client.top + static_cast<int>(line) * line_height, thickness);
+          client.top +
+              geometry.line_top(static_cast<std::size_t>(line)),
+          thickness);
     }
   } else {
     for (int pixel = 0; pixel < height; ++pixel) {
@@ -196,6 +198,8 @@ void draw_viewport(const HDC dc, const RECT& client, const State& state) {
   const auto line_count =
       std::max<sptr_t>(1, static_cast<sptr_t>(
                               sci(state.editor, SCI_GETLINECOUNT)));
+  const DocumentMapGeometry geometry(
+      height, static_cast<std::size_t>(line_count));
   const auto first_visible =
       static_cast<sptr_t>(sci(state.editor, SCI_GETFIRSTVISIBLELINE));
   const auto visible_count = std::max<sptr_t>(
@@ -210,10 +214,12 @@ void draw_viewport(const HDC dc, const RECT& client, const State& state) {
           static_cast<WPARAM>(first_visible + visible_count - 1))),
       first_document, line_count - 1);
 
-  int top = client.top + static_cast<int>(
-      static_cast<long double>(first_document) * height / line_count);
-  int bottom = client.top + static_cast<int>(std::ceil(
-      static_cast<long double>(last_document + 1) * height / line_count));
+  int top =
+      client.top +
+      geometry.line_top(static_cast<std::size_t>(first_document));
+  int bottom =
+      client.top +
+      geometry.line_bottom(static_cast<std::size_t>(last_document));
   bottom = std::max(bottom, top + 3);
   if (bottom > client.bottom) {
     top = std::max(client.top, client.bottom - (bottom - top));

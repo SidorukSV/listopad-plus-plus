@@ -113,6 +113,7 @@ if(LISTOPAD_BUILD_TESTS)
   find_package(Catch2 3 CONFIG REQUIRED)
   add_executable(listopad_tests
     tests/command_line_tests.cpp
+    tests/document_map_tests.cpp
     tests/emmet_tests.cpp
     tests/encoding_tests.cpp
     tests/file_io_tests.cpp
