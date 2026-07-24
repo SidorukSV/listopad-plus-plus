@@ -1,5 +1,6 @@
 #include "document_map.h"
 
+#include "listopad/document_map_cache.h"
 #include "listopad/document_map_geometry.h"
 
 #include <Scintilla.h>
@@ -7,7 +8,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <string_view>
+#include <utility>
 
 namespace listopad::app {
 namespace {
@@ -23,7 +28,8 @@ struct State {
   HBITMAP preview{nullptr};
   int preview_width{0};
   int preview_height{0};
-  bool preview_dirty{true};
+  DocumentMapLineCache lines;
+  std::optional<std::size_t> preview_dirty_from{0};
 };
 
 LRESULT sci(const HWND window, const UINT message, const WPARAM wparam = 0,
@@ -40,7 +46,29 @@ void discard_preview(State& state) {
   state.preview = nullptr;
   state.preview_width = 0;
   state.preview_height = 0;
-  state.preview_dirty = true;
+  state.preview_dirty_from = 0;
+}
+
+std::size_t editor_line_count(const HWND editor) {
+  return static_cast<std::size_t>(std::max<sptr_t>(
+      1, static_cast<sptr_t>(sci(editor, SCI_GETLINECOUNT))));
+}
+
+void reset_preview(State& state) {
+  state.lines.reset(state.editor ? editor_line_count(state.editor) : 0);
+  discard_preview(state);
+}
+
+void invalidate_preview_from(State& state, const std::size_t first_line) {
+  if (!state.editor) return;
+  const std::size_t line_count = editor_line_count(state.editor);
+  const std::size_t old_line_count = state.lines.line_count();
+  state.lines.invalidate_from(first_line, line_count);
+  const std::size_t dirty_from =
+      old_line_count == line_count ? std::min(first_line, line_count - 1) : 0;
+  state.preview_dirty_from = state.preview_dirty_from
+      ? std::min(*state.preview_dirty_from, dirty_from)
+      : dirty_from;
 }
 
 void navigate_to_point(const HWND map, const State& state, const int y) {
@@ -67,42 +95,31 @@ void navigate_to_point(const HWND map, const State& state, const int y) {
   SetFocus(state.editor);
 }
 
-void draw_preview_line(const HDC dc, const RECT& client, const HWND editor,
-                       const sptr_t line, const int y, const int thickness) {
+DocumentMapLine capture_preview_line(const HWND editor, const sptr_t line) {
+  DocumentMapLine result;
   const auto line_start =
       static_cast<sptr_t>(sci(editor, SCI_POSITIONFROMLINE, line));
   const auto line_end =
       static_cast<sptr_t>(sci(editor, SCI_GETLINEENDPOSITION, line));
-  if (line_start < 0 || line_end <= line_start) return;
+  if (line_start < 0 || line_end <= line_start) return result;
   const auto preview_end = std::min<sptr_t>(
       line_end, static_cast<sptr_t>(
                     sci(editor, SCI_FINDCOLUMN, line, kPreviewColumns)));
-  const int width = std::max(
-      1L, client.right - client.left - kHorizontalPadding * 2);
   sptr_t run_start = -1;
   unsigned char run_style = 0;
   const auto flush_run = [&](const sptr_t run_end) {
     if (run_start < 0 || run_end <= run_start) return;
-    const int first_column = std::clamp(
+    const auto first_column = static_cast<std::uint16_t>(std::clamp(
         static_cast<int>(sci(editor, SCI_GETCOLUMN, run_start)), 0,
-        kPreviewColumns - 1);
-    const int last_column = std::clamp(
+        kPreviewColumns - 1));
+    const auto last_column = static_cast<std::uint16_t>(std::clamp(
         static_cast<int>(sci(editor, SCI_GETCOLUMN, run_end)),
-        first_column + 1, kPreviewColumns);
-    RECT fragment{
-        client.left + kHorizontalPadding +
-            MulDiv(first_column, width, kPreviewColumns),
-        y,
-        client.left + kHorizontalPadding +
-            MulDiv(last_column, width, kPreviewColumns),
-        y + thickness};
-    fragment.right = std::max(fragment.left + 1, fragment.right);
-    SetDCBrushColor(
-        dc, static_cast<COLORREF>(
-                sci(editor, SCI_STYLEGETFORE,
-                    static_cast<WPARAM>(run_style))));
-    FillRect(dc, &fragment,
-             static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+        static_cast<int>(first_column) + 1, kPreviewColumns));
+    result.push_back({
+        .first_column = first_column,
+        .last_column = last_column,
+        .style = run_style,
+    });
   };
 
   for (sptr_t position = line_start; position < preview_end; ++position) {
@@ -126,37 +143,72 @@ void draw_preview_line(const HDC dc, const RECT& client, const HWND editor,
     }
   }
   flush_run(preview_end);
+  return result;
+}
+
+const DocumentMapLine& preview_line(State& state, const std::size_t line) {
+  if (const DocumentMapLine* cached = state.lines.line(line)) return *cached;
+  state.lines.store(
+      line, capture_preview_line(
+                state.editor, static_cast<sptr_t>(line)));
+  return *state.lines.line(line);
+}
+
+void draw_preview_line(const HDC dc, const RECT& client, State& state,
+                       const std::size_t line, const int y,
+                       const int thickness) {
+  const int width = std::max(
+      1L, client.right - client.left - kHorizontalPadding * 2);
+  for (const DocumentMapRun& run : preview_line(state, line)) {
+    RECT fragment{
+        client.left + kHorizontalPadding +
+            MulDiv(run.first_column, width, kPreviewColumns),
+        y,
+        client.left + kHorizontalPadding +
+            MulDiv(run.last_column, width, kPreviewColumns),
+        y + thickness};
+    fragment.right = std::max(fragment.left + 1, fragment.right);
+    SetDCBrushColor(
+        dc, static_cast<COLORREF>(
+                sci(state.editor, SCI_STYLEGETFORE,
+                    static_cast<WPARAM>(run.style))));
+    FillRect(dc, &fragment,
+             static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+  }
 }
 
 void draw_document_preview(const HDC dc, const RECT& client,
-                           const State& state) {
+                           State& state,
+                           const std::size_t first_dirty_line) {
   if (!state.editor) return;
   const int height = std::max(1L, client.bottom - client.top);
-  const auto line_count =
-      std::max<sptr_t>(1, static_cast<sptr_t>(
-                              sci(state.editor, SCI_GETLINECOUNT)));
+  const std::size_t line_count = editor_line_count(state.editor);
   const DocumentMapGeometry geometry(
-      height, static_cast<std::size_t>(line_count));
+      height, line_count);
   if (!geometry.compressed()) {
     // Keep short documents anchored to the top. Stretching every document
     // line across the full map placed a one-line file in the vertical middle
     // and made sparse files look disconnected from the editor.
     const int thickness = std::max(1, geometry.line_height() - 1);
-    for (sptr_t line = 0; line < line_count; ++line) {
+    for (std::size_t line = first_dirty_line;
+         line < line_count; ++line) {
       draw_preview_line(
-          dc, client, state.editor, line,
+          dc, client, state, line,
           client.top +
-              geometry.line_top(static_cast<std::size_t>(line)),
+              geometry.line_top(line),
           thickness);
     }
   } else {
-    for (int pixel = 0; pixel < height; ++pixel) {
-      const auto line = std::min<sptr_t>(
+    const int first_pixel = first_dirty_line == 0
+        ? 0
+        : std::max(0, geometry.line_top(first_dirty_line) - 1);
+    for (int pixel = first_pixel; pixel < height; ++pixel) {
+      const auto line = std::min(
           line_count - 1,
-          static_cast<sptr_t>(
+          static_cast<std::size_t>(
               (static_cast<long double>(pixel) + 0.5L) * line_count /
               height));
-      draw_preview_line(dc, client, state.editor, line,
+      draw_preview_line(dc, client, state, line,
                         client.top + pixel, 1);
     }
   }
@@ -165,15 +217,18 @@ void draw_document_preview(const HDC dc, const RECT& client,
 void ensure_preview(const HDC reference, const RECT& client, State& state) {
   const int width = std::max(1L, client.right - client.left);
   const int height = std::max(1L, client.bottom - client.top);
-  if (!state.preview_dirty && state.preview &&
+  if (!state.preview_dirty_from && state.preview &&
       state.preview_width == width && state.preview_height == height) {
     return;
   }
-  discard_preview(state);
-  state.preview = CreateCompatibleBitmap(reference, width, height);
-  if (!state.preview) return;
-  state.preview_width = width;
-  state.preview_height = height;
+  if (!state.preview || state.preview_width != width ||
+      state.preview_height != height) {
+    discard_preview(state);
+    state.preview = CreateCompatibleBitmap(reference, width, height);
+    if (!state.preview) return;
+    state.preview_width = width;
+    state.preview_height = height;
+  }
   HDC preview_dc = CreateCompatibleDC(reference);
   if (!preview_dc) {
     discard_preview(state);
@@ -181,15 +236,30 @@ void ensure_preview(const HDC reference, const RECT& client, State& state) {
   }
   const HGDIOBJ previous = SelectObject(preview_dc, state.preview);
   RECT preview_rect{0, 0, width, height};
+  const std::size_t line_count = editor_line_count(state.editor);
+  if (state.lines.line_count() != line_count) {
+    state.lines.invalidate_from(0, line_count);
+    state.preview_dirty_from = 0;
+  }
+  const std::size_t first_dirty_line = std::min(
+      state.preview_dirty_from.value_or(0), line_count - 1);
+  const DocumentMapGeometry geometry(height, line_count);
+  const int dirty_top = first_dirty_line == 0
+      ? 0
+      : geometry.compressed()
+          ? std::max(0, geometry.line_top(first_dirty_line) - 1)
+          : geometry.line_top(first_dirty_line);
+  RECT dirty_rect{0, dirty_top, width, height};
   const COLORREF background = static_cast<COLORREF>(
       sci(state.editor, SCI_STYLEGETBACK, STYLE_DEFAULT));
   SetDCBrushColor(preview_dc, background);
-  FillRect(preview_dc, &preview_rect,
+  FillRect(preview_dc, &dirty_rect,
            static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
-  draw_document_preview(preview_dc, preview_rect, state);
+  draw_document_preview(
+      preview_dc, preview_rect, state, first_dirty_line);
   SelectObject(preview_dc, previous);
   DeleteDC(preview_dc);
-  state.preview_dirty = false;
+  state.preview_dirty_from.reset();
 }
 
 void draw_viewport(const HDC dc, const RECT& client, const State& state) {
@@ -349,7 +419,7 @@ void DocumentMap::attach(const HWND map, const HWND editor) {
   if (!map || !editor) return;
   if (State* state = state_for(map)) {
     state->editor = editor;
-    discard_preview(*state);
+    reset_preview(*state);
   }
   InvalidateRect(map, nullptr, FALSE);
 }
@@ -368,7 +438,17 @@ void DocumentMap::content_changed(const HWND map, const HWND editor) {
   if (!map || !editor) return;
   if (State* state = state_for(map)) {
     state->editor = editor;
-    discard_preview(*state);
+    reset_preview(*state);
+  }
+  InvalidateRect(map, nullptr, FALSE);
+}
+
+void DocumentMap::content_changed_from_line(
+    const HWND map, const HWND editor, const std::size_t first_line) {
+  if (!map || !editor) return;
+  if (State* state = state_for(map)) {
+    state->editor = editor;
+    invalidate_preview_from(*state, first_line);
   }
   InvalidateRect(map, nullptr, FALSE);
 }

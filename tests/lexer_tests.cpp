@@ -1,4 +1,5 @@
 #include "listopad/lexers.h"
+#include "support/lexer_test_document.h"
 
 #include <ILexer.h>
 #include <SciLexer.h>
@@ -7,161 +8,145 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
-#include <cstring>
+#include <array>
+#include <memory>
 #include <string>
-#include <utility>
+#include <string_view>
 #include <vector>
 
 namespace {
 
-class TestDocument final : public Scintilla::IDocument {
- public:
-  explicit TestDocument(std::string text) : text_(std::move(text)), styles_(text_.size()) {}
+using TestDocument = listopad::test::LexerDocument;
 
-  int SCI_METHOD Version() const override { return Scintilla::dvRelease4; }
-  void SCI_METHOD SetErrorStatus(int) override {}
-  Sci_Position SCI_METHOD Length() const override { return static_cast<Sci_Position>(text_.size()); }
-  void SCI_METHOD GetCharRange(char* buffer, const Sci_Position position,
-                               const Sci_Position length) const override {
-    std::memcpy(buffer, text_.data() + position, static_cast<std::size_t>(length));
+struct LexerReleaser {
+  void operator()(Scintilla::ILexer5* lexer) const noexcept {
+    if (lexer) lexer->Release();
   }
-  char SCI_METHOD StyleAt(const Sci_Position position) const override {
-    if (position < 0 || position >= Length()) return 0;
-    return styles_[static_cast<std::size_t>(position)];
-  }
-  Sci_Position SCI_METHOD LineFromPosition(Sci_Position position) const override {
-    position = (std::clamp)(position, Sci_Position{}, Length());
-    return static_cast<Sci_Position>(std::count(text_.begin(), text_.begin() + position, '\n'));
-  }
-  Sci_Position SCI_METHOD LineStart(const Sci_Position line) const override {
-    if (line <= 0) return 0;
-    Sci_Position current = 0;
-    for (Sci_Position position = 0; position < Length(); ++position) {
-      if (text_[static_cast<std::size_t>(position)] == '\n' && ++current == line) return position + 1;
-    }
-    return Length();
-  }
-  int SCI_METHOD GetLevel(const Sci_Position line) const override {
-    return line >= 0 && static_cast<std::size_t>(line) < levels_.size()
-               ? levels_[static_cast<std::size_t>(line)] : SC_FOLDLEVELBASE;
-  }
-  int SCI_METHOD SetLevel(const Sci_Position line, const int level) override {
-    ensure_line(levels_, line, SC_FOLDLEVELBASE);
-    return std::exchange(levels_[static_cast<std::size_t>(line)], level);
-  }
-  int SCI_METHOD GetLineState(const Sci_Position line) const override {
-    return line >= 0 && static_cast<std::size_t>(line) < line_states_.size()
-               ? line_states_[static_cast<std::size_t>(line)] : 0;
-  }
-  int SCI_METHOD SetLineState(const Sci_Position line, const int state) override {
-    ensure_line(line_states_, line, 0);
-    return std::exchange(line_states_[static_cast<std::size_t>(line)], state);
-  }
-  void SCI_METHOD StartStyling(const Sci_Position position) override { styling_position_ = position; }
-  bool SCI_METHOD SetStyleFor(const Sci_Position length, const char style) override {
-    const Sci_Position end = (std::min)(Length(), styling_position_ + length);
-    std::fill(styles_.begin() + styling_position_, styles_.begin() + end, style);
-    styling_position_ = end;
-    return true;
-  }
-  bool SCI_METHOD SetStyles(const Sci_Position length, const char* styles) override {
-    const Sci_Position end = (std::min)(Length(), styling_position_ + length);
-    std::copy(styles, styles + (end - styling_position_), styles_.begin() + styling_position_);
-    styling_position_ = end;
-    return true;
-  }
-  void SCI_METHOD DecorationSetCurrentIndicator(int) override {}
-  void SCI_METHOD DecorationFillRange(Sci_Position, int, Sci_Position) override {}
-  void SCI_METHOD ChangeLexerState(Sci_Position, Sci_Position) override {}
-  int SCI_METHOD CodePage() const override { return SC_CP_UTF8; }
-  bool SCI_METHOD IsDBCSLeadByte(char) const override { return false; }
-  const char* SCI_METHOD BufferPointer() override { return text_.data(); }
-  int SCI_METHOD GetLineIndentation(const Sci_Position line) override {
-    int indentation = 0;
-    for (Sci_Position position = LineStart(line); position < Length(); ++position) {
-      const char ch = text_[static_cast<std::size_t>(position)];
-      if (ch == ' ') ++indentation;
-      else if (ch == '\t') indentation += 4;
-      else break;
-    }
-    return indentation;
-  }
-  Sci_Position SCI_METHOD LineEnd(const Sci_Position line) const override {
-    Sci_Position position = LineStart(line);
-    while (position < Length() && text_[static_cast<std::size_t>(position)] != '\r' &&
-           text_[static_cast<std::size_t>(position)] != '\n') ++position;
-    return position;
-  }
-  Sci_Position SCI_METHOD GetRelativePosition(Sci_Position position,
-                                              const Sci_Position character_offset) const override {
-    if (character_offset >= 0) {
-      for (Sci_Position count = 0; count < character_offset && position < Length(); ++count)
-        position += utf8_width(position);
-    } else {
-      for (Sci_Position count = 0; count > character_offset && position > 0; --count) {
-        --position;
-        while (position > 0 && (static_cast<unsigned char>(text_[static_cast<std::size_t>(position)]) & 0xc0) == 0x80)
-          --position;
-      }
-    }
-    return position;
-  }
-  int SCI_METHOD GetCharacterAndWidth(const Sci_Position position,
-                                      Sci_Position* width) const override {
-    if (position < 0 || position >= Length()) {
-      if (width) *width = 1;
-      return 0;
-    }
-    const unsigned char first = static_cast<unsigned char>(text_[static_cast<std::size_t>(position)]);
-    const Sci_Position count = utf8_width(position);
-    if (width) *width = count;
-    if (count == 1) return first;
-    int codepoint = first & (count == 2 ? 0x1f : count == 3 ? 0x0f : 0x07);
-    for (Sci_Position index = 1; index < count; ++index)
-      codepoint = (codepoint << 6) |
-                  (static_cast<unsigned char>(text_[static_cast<std::size_t>(position + index)]) & 0x3f);
-    return codepoint;
-  }
-
-  unsigned char style_at(const std::string& token) const {
-    const std::size_t position = text_.find(token);
-    REQUIRE(position != std::string::npos);
-    return static_cast<unsigned char>(styles_[position]);
-  }
-
-  Sci_Position position_of(const std::string& token) const {
-    const std::size_t position = text_.find(token);
-    REQUIRE(position != std::string::npos);
-    return static_cast<Sci_Position>(position);
-  }
-
-  void clear_styles_from(const Sci_Position position) {
-    REQUIRE(position >= 0);
-    REQUIRE(position <= Length());
-    std::fill(styles_.begin() + position, styles_.end(), 0);
-  }
-
-  Sci_Position styling_position() const { return styling_position_; }
-
- private:
-  static void ensure_line(std::vector<int>& values, const Sci_Position line, const int initial) {
-    if (line >= 0 && static_cast<std::size_t>(line) >= values.size())
-      values.resize(static_cast<std::size_t>(line) + 1, initial);
-  }
-  Sci_Position utf8_width(const Sci_Position position) const {
-    const unsigned char first = static_cast<unsigned char>(text_[static_cast<std::size_t>(position)]);
-    if ((first & 0x80) == 0) return 1;
-    if ((first & 0xe0) == 0xc0) return 2;
-    if ((first & 0xf0) == 0xe0) return 3;
-    return 4;
-  }
-
-  std::string text_;
-  std::vector<char> styles_;
-  std::vector<int> levels_;
-  std::vector<int> line_states_;
-  Sci_Position styling_position_{0};
 };
+
+using LexerPtr = std::unique_ptr<Scintilla::ILexer5, LexerReleaser>;
+
+void configure_bsl(Scintilla::ILexer5& lexer) {
+  lexer.WordListSet(
+      0, "procedure endprocedure export if then else endif "
+         "процедура конецпроцедуры экспорт если тогда иначе конецесли");
+  lexer.WordListSet(1, "string number boolean строка число булево");
+  lexer.WordListSet(2, "message string сообщить строка");
+}
+
+void configure_html(Scintilla::ILexer5& lexer) {
+  lexer.WordListSet(1, "const let var function return class");
+}
+
+std::size_t first_style_difference(const TestDocument& expected,
+                                   const TestDocument& actual) {
+  const auto& expected_styles = expected.styles();
+  const auto& actual_styles = actual.styles();
+  const auto mismatch = std::mismatch(expected_styles.begin(),
+                                      expected_styles.end(),
+                                      actual_styles.begin(),
+                                      actual_styles.end());
+  return mismatch.first == expected_styles.end()
+             ? std::string::npos
+             : static_cast<std::size_t>(
+                   std::distance(expected_styles.begin(), mismatch.first));
+}
+
+template <typename Factory, typename Configure>
+void check_incremental_equivalence(const std::string& text, Factory factory,
+                                   Configure configure,
+                                   const int default_style) {
+  TestDocument expected(text);
+  LexerPtr full(factory());
+  REQUIRE(full);
+  configure(*full);
+  full->Lex(0, expected.Length(), default_style, &expected);
+
+  const std::array<std::size_t, 7> requested_starts{
+      0,
+      text.size() / 7,
+      text.size() / 3,
+      text.size() / 2,
+      text.empty() ? 0 : text.size() - 1,
+      text.find('\n') == std::string::npos ? 0 : text.find('\n') + 1,
+      text.find("<style") == std::string::npos ? text.size() / 5
+                                               : text.find("<style") + 3,
+  };
+
+  for (const std::size_t requested_start : requested_starts) {
+    TestDocument incremental(text);
+    LexerPtr partial(factory());
+    REQUIRE(partial);
+    configure(*partial);
+    partial->Lex(0, incremental.Length(), default_style, &incremental);
+
+    const auto start = static_cast<Sci_Position>(
+        (std::min)(requested_start, text.size()));
+    const int initial_style =
+        start == 0
+            ? default_style
+            : static_cast<unsigned char>(incremental.StyleAt(start - 1));
+    incremental.clear_styles_from(start);
+    partial->Lex(static_cast<Sci_PositionU>(start),
+                 incremental.Length() - start, initial_style, &incremental);
+
+    const std::size_t mismatch =
+        first_style_difference(expected, incremental);
+    CAPTURE(requested_start, mismatch, text);
+    CHECK(mismatch == std::string::npos);
+  }
+}
+
+std::uint32_t next_value(std::uint32_t& state) {
+  state = state * 1664525u + 1013904223u;
+  return state;
+}
+
+std::string generated_html(std::uint32_t seed) {
+  static constexpr std::array<std::string_view, 12> fragments{
+      "<div class=\"card\">текст</div>\n",
+      "<style>.card { color: red; padding: 1px; }</style>\n",
+      "<script>const answer = 42; if (answer) { alert(answer); }</script>\n",
+      "<!-- комментарий со <style>ложным</style> тегом -->\n",
+      "<input disabled data-value='x>y'>\n",
+      "<custom-element aria-label=\"пример\"></custom-element>\n",
+      "<style media=\"screen\">@media (min-width:1px){a:hover{opacity:.5}}</style>\n",
+      "<script type=\"module\">let tag = \"</style>\";</script>\n",
+      "<p title=\"кавычки &amp; сущности\">абзац</p>\n",
+      "<template><span>{{ value }}</span></template>\n",
+      "<br/><meta charset=\"utf-8\">\n",
+      "обычный текст &lt; без тега\n",
+  };
+
+  std::string result = "<!DOCTYPE html>\n<html><head>\n";
+  for (int index = 0; index < 10; ++index) {
+    result.append(fragments[next_value(seed) % fragments.size()]);
+  }
+  result += "</head><body><section id=\"end\">конец</section></body></html>\n";
+  return result;
+}
+
+std::string generated_bsl(std::uint32_t seed) {
+  static constexpr std::array<std::string_view, 11> fragments{
+      "&НаКлиенте\nПроцедура Тест(Параметр) Экспорт\n",
+      "Если Параметр = 42 Тогда\nСообщить(\"Готово\");\nКонецЕсли;\n",
+      "// комментарий с кавычкой \" и кириллицей\n",
+      "Значение = '20260724';\n",
+      "СтрокаТекста = \"двойная \"\"кавычка\"\"\";\n",
+      "#Область Проверка\n#КонецОбласти\n",
+      "Число = 1.25e-3 + 7;\n",
+      "Массив[0] = НеизвестныйИдентификатор;\n",
+      "\tСообщить(Строка(Параметр));\n",
+      "СтрокаТекста = \"первая строка\n|вторая строка\";\n",
+      "КонецПроцедуры\n",
+  };
+
+  std::string result;
+  for (int index = 0; index < 12; ++index) {
+    result.append(fragments[next_value(seed) % fragments.size()]);
+  }
+  return result;
+}
 
 }  // namespace
 
@@ -232,4 +217,97 @@ TEST_CASE("HTML lexer recovers when incremental styling starts inside a tag") {
   const unsigned char css_style = document.style_at("color");
   CHECK(css_style >= listopad::kEmbeddedCssStyleBase);
   lexer->Release();
+}
+
+TEST_CASE("HTML full and incremental lexing remain equivalent") {
+  for (std::uint32_t seed = 1; seed <= 32; ++seed) {
+    CAPTURE(seed);
+    check_incremental_equivalence(
+        generated_html(seed), listopad::create_html_css_lexer,
+        configure_html, SCE_H_DEFAULT);
+  }
+}
+
+TEST_CASE("HTML incremental lexing restores the enclosing style element") {
+  const std::string text = "<style>a<s\n</style>";
+  TestDocument expected(text);
+  LexerPtr full(listopad::create_html_css_lexer());
+  REQUIRE(full);
+  configure_html(*full);
+  full->Lex(0, expected.Length(), SCE_H_DEFAULT, &expected);
+
+  TestDocument incremental(text);
+  LexerPtr partial(listopad::create_html_css_lexer());
+  REQUIRE(partial);
+  configure_html(*partial);
+  partial->Lex(0, incremental.Length(), SCE_H_DEFAULT, &incremental);
+  const Sci_Position start = incremental.position_of("</style>") + 5;
+  const int initial_style =
+      static_cast<unsigned char>(incremental.StyleAt(start - 1));
+  incremental.clear_styles_from(start);
+  partial->Lex(static_cast<Sci_PositionU>(start),
+               incremental.Length() - start, initial_style, &incremental);
+
+  CHECK(first_style_difference(expected, incremental) == std::string::npos);
+}
+
+TEST_CASE("HTML incremental lexing preserves an earlier CSS overlay") {
+  const std::string text = "<style>x;)</style><\nr2<";
+  TestDocument expected(text);
+  LexerPtr full(listopad::create_html_css_lexer());
+  REQUIRE(full);
+  configure_html(*full);
+  full->Lex(0, expected.Length(), SCE_H_DEFAULT, &expected);
+
+  TestDocument incremental(text);
+  LexerPtr partial(listopad::create_html_css_lexer());
+  REQUIRE(partial);
+  configure_html(*partial);
+  partial->Lex(0, incremental.Length(), SCE_H_DEFAULT, &incremental);
+  const Sci_Position start = incremental.position_of("r2") + 1;
+  const int initial_style =
+      static_cast<unsigned char>(incremental.StyleAt(start - 1));
+  incremental.clear_styles_from(start);
+  partial->Lex(static_cast<Sci_PositionU>(start),
+               incremental.Length() - start, initial_style, &incremental);
+
+  CHECK(first_style_difference(expected, incremental) == std::string::npos);
+  CHECK(incremental.style_at("x;)") >= listopad::kEmbeddedCssStyleBase);
+}
+
+TEST_CASE("BSL full and incremental lexing remain equivalent") {
+  for (std::uint32_t seed = 1; seed <= 32; ++seed) {
+    CAPTURE(seed);
+    check_incremental_equivalence(
+        generated_bsl(seed), listopad::create_bsl_lexer,
+        configure_bsl, listopad::BslDefault);
+  }
+}
+
+TEST_CASE("BSL incremental lexing restores a multi-line string state") {
+  const std::string text =
+      "СтрокаТекста = \"первая строка\n"
+      "|вторая строка\";\n"
+      "Сообщить(СтрокаТекста);\n";
+  TestDocument expected(text);
+  LexerPtr full(listopad::create_bsl_lexer());
+  REQUIRE(full);
+  configure_bsl(*full);
+  full->Lex(0, expected.Length(), listopad::BslDefault, &expected);
+
+  TestDocument incremental(text);
+  LexerPtr partial(listopad::create_bsl_lexer());
+  REQUIRE(partial);
+  configure_bsl(*partial);
+  partial->Lex(0, incremental.Length(), listopad::BslDefault, &incremental);
+  const Sci_Position start = incremental.position_of("|вторая") + 3;
+  const int initial_style =
+      static_cast<unsigned char>(incremental.StyleAt(start - 1));
+  incremental.clear_styles_from(start);
+  partial->Lex(static_cast<Sci_PositionU>(start),
+               incremental.Length() - start, initial_style, &incremental);
+
+  CHECK(first_style_difference(expected, incremental) == std::string::npos);
+  CHECK(incremental.style_at("|вторая") == listopad::BslString);
+  CHECK(incremental.style_at("Сообщить") == listopad::BslFunction);
 }

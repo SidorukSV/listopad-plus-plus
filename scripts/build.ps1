@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
-  [ValidateSet('debug', 'release')][string]$Preset = 'release',
+  [ValidateSet('debug', 'release', 'asan')][string]$Preset = 'release',
   [string]$VcpkgRoot = (Join-Path $PSScriptRoot '..\.deps\vcpkg'),
-  [string]$Version = '0.1.5',
+  [string]$Version = '0.1.6',
   [switch]$SkipTests
 )
 

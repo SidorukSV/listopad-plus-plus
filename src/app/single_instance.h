@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <functional>
+#include <string>
 #include <thread>
 
 namespace listopad::app {
@@ -23,10 +24,10 @@ class SingleInstance final {
   void start(Callback callback);
 
  private:
+  std::wstring pipe_name_;
   HANDLE mutex_{nullptr};
   bool primary_{false};
   std::jthread server_;
 };
 
 }  // namespace listopad::app
-

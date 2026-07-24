@@ -1,9 +1,16 @@
 #pragma once
 
+#include "command_controller.h"
+#include "document_session.h"
+#include "document_view_controller.h"
 #include "elevated_client.h"
 #include "file_watcher.h"
+#include "search_controller.h"
+#include "tab_controller.h"
+#include "window_layout_controller.h"
 #include "listopad/command_line.h"
 #include "listopad/document.h"
+#include "listopad/document_mutation.h"
 #include "listopad/emmet_engine.h"
 #include "listopad/ipc_protocol.h"
 #include "listopad/settings.h"
@@ -35,24 +42,30 @@ class EditorWindow final {
   static constexpr UINT kExternalChangeMessage = WM_APP + 2;
   static constexpr UINT kSearchResultMessage = WM_APP + 3;
   static constexpr UINT kDocumentMapRefreshMessage = WM_APP + 4;
+  static constexpr UINT kGuiSmokeCommandMessage = WM_APP + 63;
 
  private:
-  enum class ViewKind {
-    Text,
-    LargeText,
-    Hex,
-  };
+  friend class CommandController;
+  friend class DocumentViewController;
 
-  struct Tab {
-    Document document;
-    ViewKind view_kind{ViewKind::Text};
-    HWND view{nullptr};
-    HWND map{nullptr};
-    HWND suspended_text_view{nullptr};
-    HWND suspended_text_map{nullptr};
-    bool external_notice_pending{false};
-    std::vector<EmmetField> snippet_fields;
-    std::size_t snippet_index{0};
+  using Tab = DocumentSession;
+  using ViewKind = DocumentViewKind;
+
+  class DocumentMutationScope final {
+   public:
+    DocumentMutationScope(EditorWindow& owner, Tab& tab,
+                          DocumentMutationOrigin origin);
+    ~DocumentMutationScope();
+    DocumentMutationScope(const DocumentMutationScope&) = delete;
+    DocumentMutationScope& operator=(const DocumentMutationScope&) = delete;
+
+   private:
+    EditorWindow& owner_;
+    Tab& tab_;
+    DocumentMutationOrigin origin_;
+    DocumentMutationPolicy policy_;
+    Tab* previous_tab_{nullptr};
+    DocumentMutationOrigin previous_origin_{DocumentMutationOrigin::User};
   };
 
   struct SearchHit {
@@ -101,7 +114,7 @@ class EditorWindow final {
   void activate_tab(int index);
   void add_empty_tab();
   [[nodiscard]] static bool editable(const Tab& tab) {
-    return tab.view_kind == ViewKind::Text;
+    return tab.editable();
   }
   void destroy_tab_views(Tab& tab);
   bool create_tab_views(Tab& tab);
@@ -119,10 +132,16 @@ class EditorWindow final {
   void configure_editor(HWND editor, const Document& document);
   void apply_language(Tab& tab, std::string_view language);
   std::string editor_text(HWND editor) const;
-  void set_editor_text(HWND editor, std::string_view text, bool save_point);
+  void set_editor_text(Tab& tab, std::string_view text,
+                       DocumentMutationOrigin origin);
+  void replace_editor_range(Tab& tab, std::size_t start, std::size_t end,
+                            std::string_view text,
+                            DocumentMutationOrigin origin);
+  void finish_document_mutation(Tab& tab, DocumentMutationOrigin origin);
   bool try_emmet(HWND editor, bool backwards);
   void format_active();
   void show_search(bool replace);
+  void apply_search_visibility();
   void find_next();
   void find_all();
   void replace_one();
@@ -171,17 +190,22 @@ class EditorWindow final {
   HBRUSH panel_brush_{nullptr};
   HBRUSH field_brush_{nullptr};
   HBRUSH banner_brush_{nullptr};
-  std::vector<Tab> documents_;
+  TabController tab_controller_;
   std::vector<std::string> language_menu_ids_;
   std::vector<std::unique_ptr<MenuVisual>> menu_visuals_;
   FileWatcher watcher_;
   ElevatedClient elevated_;
   EmmetEngine emmet_;
-  std::jthread search_thread_;
-  std::uint64_t search_generation_{0};
+  SearchController search_;
   std::vector<SearchHit> search_hits_;
   int pressed_close_tab_{-1};
   bool dark_{false};
+  CommandController command_controller_;
+  DocumentViewController view_controller_;
+  WindowLayoutController layout_controller_;
+  Tab* active_mutation_tab_{nullptr};
+  DocumentMutationOrigin active_mutation_origin_{
+      DocumentMutationOrigin::User};
 };
 
 }  // namespace listopad::app

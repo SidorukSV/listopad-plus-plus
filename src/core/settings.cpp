@@ -6,8 +6,9 @@
 #include <shlobj.h>
 #include <yyjson.h>
 
-#include <cstdlib>
 #include <algorithm>
+#include <cstdlib>
+#include <optional>
 
 namespace listopad {
 namespace {
@@ -17,6 +18,16 @@ std::filesystem::path executable_directory() {
   const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
   buffer.resize(length);
   return std::filesystem::path(buffer).parent_path();
+}
+
+std::optional<std::filesystem::path> profile_directory_override() {
+  std::wstring buffer(32768, L'\0');
+  const DWORD length = GetEnvironmentVariableW(
+      L"LISTOPAD_PROFILE_DIR", buffer.data(),
+      static_cast<DWORD>(buffer.size()));
+  if (length == 0 || length >= buffer.size()) return std::nullopt;
+  buffer.resize(length);
+  return std::filesystem::path(std::move(buffer));
 }
 
 void read_string(yyjson_val* root, const char* key, std::string& target) {
@@ -29,6 +40,9 @@ void read_string(yyjson_val* root, const char* key, std::string& target) {
 bool portable_mode() { return std::filesystem::exists(executable_directory() / L"portable.flag"); }
 
 std::filesystem::path settings_path() {
+  if (const auto profile = profile_directory_override()) {
+    return *profile / L"settings.json";
+  }
   if (portable_mode()) return executable_directory() / L"settings.json";
   PWSTR local = nullptr;
   std::filesystem::path result;

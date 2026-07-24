@@ -1,5 +1,9 @@
 # Repository workflow
 
+- Before development or refactoring, read `ARCHITECTURE.md` and preserve its
+  decisions and invariants.
+- Update `ARCHITECTURE.md` in the same change whenever an architectural
+  decision, component boundary, or invariant changes.
 - The `main` branch is protected. Never push commits directly to `main`.
 - Put repository changes on the `dev` branch and push `dev` to `origin`.
 - Open a pull request from `dev` into `main` and wait for its required checks.

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.29)
-set(LISTOPAD_VERSION "0.1.5" CACHE STRING "Listopad++ semantic version")
+set(LISTOPAD_VERSION "0.1.6" CACHE STRING "Listopad++ semantic version")
 project(ListopadPP VERSION "${LISTOPAD_VERSION}" LANGUAGES C CXX RC)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -7,10 +7,28 @@ if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
 endif()
 
 option(LISTOPAD_BUILD_TESTS "Build unit tests" ON)
+option(LISTOPAD_ENABLE_ASAN "Instrument application and dependency targets with AddressSanitizer" OFF)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+function(listopad_enable_address_sanitizer target)
+  if(NOT LISTOPAD_ENABLE_ASAN)
+    return()
+  endif()
+  if(NOT MSVC)
+    message(FATAL_ERROR "LISTOPAD_ENABLE_ASAN currently supports the MSVC-compatible Windows toolchain")
+  endif()
+
+  target_compile_options(${target} PRIVATE /fsanitize=address /Zi)
+  get_target_property(target_type ${target} TYPE)
+  if(target_type STREQUAL "EXECUTABLE" OR
+     target_type STREQUAL "SHARED_LIBRARY" OR
+     target_type STREQUAL "MODULE_LIBRARY")
+    target_link_options(${target} PRIVATE /INCREMENTAL:NO)
+  endif()
+endfunction()
 
 find_package(pcre2 CONFIG REQUIRED)
 find_package(pugixml CONFIG REQUIRED)
@@ -20,6 +38,8 @@ find_package(uchardet CONFIG REQUIRED)
 find_package(yyjson CONFIG REQUIRED)
 
 include(cmake/Scintilla.cmake)
+listopad_enable_address_sanitizer(listopad_scintilla)
+listopad_enable_address_sanitizer(listopad_lexilla)
 
 configure_file(src/app/app.manifest.in
                "${CMAKE_CURRENT_BINARY_DIR}/ListopadPP.manifest" @ONLY)
@@ -48,6 +68,7 @@ set_source_files_properties(
 add_library(listopad_core STATIC
   src/core/command_line.cpp
   src/core/document.cpp
+  src/core/document_map_cache.cpp
   src/core/emmet_engine.cpp
   src/core/encoding.cpp
   src/core/file_io.cpp
@@ -59,7 +80,8 @@ add_library(listopad_core STATIC
   src/core/settings.cpp
   src/core/shell_registration.cpp
   src/core/signature.cpp
-  src/core/strings.cpp)
+  src/core/strings.cpp
+  src/core/ui_layout.cpp)
 target_include_directories(listopad_core PUBLIC
   "${CMAKE_CURRENT_BINARY_DIR}/generated" include PRIVATE assets)
 target_compile_definitions(listopad_core PUBLIC UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN PCRE2_CODE_UNIT_WIDTH=8)
@@ -72,16 +94,22 @@ target_link_libraries(listopad_core PUBLIC
   uchardet::libuchardet
   yyjson::yyjson
   advapi32 bcrypt crypt32 shell32 shlwapi wintrust)
+listopad_enable_address_sanitizer(listopad_core)
 
 add_executable(ListopadPP WIN32
   src/app/app.cpp
+  src/app/command_controller.cpp
   src/app/document_map.cpp
+  src/app/document_view_controller.cpp
   src/app/editor_window.cpp
   src/app/elevated_client.cpp
   src/app/file_watcher.cpp
   src/app/hex_view_window.cpp
   src/app/large_file_view.cpp
+  src/app/search_controller.cpp
   src/app/single_instance.cpp
+  src/app/tab_controller.cpp
+  src/app/window_layout_controller.cpp
   src/app/resources.rc
   "${CMAKE_CURRENT_BINARY_DIR}/ListopadIcon.rc"
   "${CMAKE_CURRENT_BINARY_DIR}/ListopadPP.manifest")
@@ -92,6 +120,7 @@ target_link_libraries(ListopadPP PRIVATE
   listopad_core listopad_scintilla listopad_lexilla
   comctl32 comdlg32 dwmapi msimg32 ole32 shell32 shlwapi uxtheme version wintrust)
 set_target_properties(ListopadPP PROPERTIES OUTPUT_NAME "ListopadPP")
+listopad_enable_address_sanitizer(ListopadPP)
 
 add_executable(ListopadElevated WIN32
   src/elevated/main.cpp
@@ -103,6 +132,7 @@ target_compile_definitions(ListopadElevated PRIVATE UNICODE _UNICODE NOMINMAX WI
 target_compile_options(ListopadElevated PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(ListopadElevated PRIVATE listopad_core advapi32 bcrypt shell32 wintrust)
 target_link_options(ListopadElevated PRIVATE "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
+listopad_enable_address_sanitizer(ListopadElevated)
 
 install(TARGETS ListopadPP ListopadElevated
   RUNTIME DESTINATION . LIBRARY DESTINATION .)
@@ -112,8 +142,12 @@ if(LISTOPAD_BUILD_TESTS)
   enable_testing()
   find_package(Catch2 3 CONFIG REQUIRED)
   add_executable(listopad_tests
+    src/app/tab_controller.cpp
     tests/command_line_tests.cpp
+    tests/document_map_cache_tests.cpp
     tests/document_map_tests.cpp
+    tests/document_mutation_tests.cpp
+    tests/document_session_tests.cpp
     tests/emmet_tests.cpp
     tests/encoding_tests.cpp
     tests/file_io_tests.cpp
@@ -122,11 +156,47 @@ if(LISTOPAD_BUILD_TESTS)
     tests/ipc_tests.cpp
     tests/language_tests.cpp
     tests/lexer_tests.cpp
-    tests/search_tests.cpp)
+    tests/search_tests.cpp
+    tests/tab_controller_tests.cpp
+    tests/ui_layout_tests.cpp)
   target_compile_definitions(listopad_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_include_directories(listopad_tests PRIVATE src/app)
   target_compile_options(listopad_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
   target_link_libraries(listopad_tests PRIVATE listopad_core listopad_lexilla Catch2::Catch2WithMain)
+  listopad_enable_address_sanitizer(listopad_tests)
+
+  add_executable(listopad_benchmarks
+    benchmarks/core_benchmarks.cpp)
+  target_compile_definitions(listopad_benchmarks PRIVATE
+    UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_compile_options(listopad_benchmarks PRIVATE
+    /W4 /permissive- /utf-8 /EHsc)
+  target_link_libraries(listopad_benchmarks PRIVATE listopad_core)
+  listopad_enable_address_sanitizer(listopad_benchmarks)
+
+  # Compile the libFuzzer entry point with the regular MSVC build as well, so
+  # API drift in the harness is caught even where clang-cl is unavailable.
+  add_library(listopad_lexer_fuzz_harness_check OBJECT
+    fuzz/lexer_fuzz.cpp
+    fuzz/lexilla_factory.cpp)
+  target_include_directories(listopad_lexer_fuzz_harness_check PRIVATE
+    tests
+    "${LEXILLA_SOURCE_DIR}/lexlib")
+  target_compile_definitions(listopad_lexer_fuzz_harness_check PRIVATE
+    UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_compile_options(listopad_lexer_fuzz_harness_check PRIVATE
+    /W4 /permissive- /utf-8 /EHsc)
+  target_link_libraries(listopad_lexer_fuzz_harness_check PRIVATE
+    listopad_lexilla)
+  listopad_enable_address_sanitizer(listopad_lexer_fuzz_harness_check)
+
   include(CTest)
   include(Catch)
   catch_discover_tests(listopad_tests)
+  if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    add_test(NAME performance_budgets COMMAND listopad_benchmarks)
+    set_tests_properties(performance_budgets PROPERTIES
+      LABELS "performance"
+      TIMEOUT 15)
+  endif()
 endif()

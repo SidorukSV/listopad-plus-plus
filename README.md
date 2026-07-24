@@ -9,7 +9,7 @@ Windows 11. Он написан на C++20/Win32, быстро запускае�
 обращается к сети. В приложении нет телеметрии, новостей, рекламы, фонового
 процесса, автообновления и загрузки плагинов.
 
-Текущая версия: **0.1.4**. История изменений приведена в
+Текущая версия: **0.1.6**. История изменений приведена в
 [CHANGELOG.md](CHANGELOG.md).
 
 ## Возможности
@@ -103,7 +103,7 @@ ctest --preset debug --output-on-failure
 ```powershell
 dotnet tool install --global wix --version "5.*"
 wix extension add -g WixToolset.UI.wixext/5.0.2
-./scripts/package.ps1 -Version 0.1.4
+./scripts/package.ps1 -Version 0.1.6
 ```
 
 Версию нужно указывать явно. В v4 нет элемента `<Files>`, которым описываются

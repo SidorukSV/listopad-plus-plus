@@ -1,0 +1,79 @@
+name: Scheduled lexer generative testing
+
+on:
+  schedule:
+    - cron: "17 2 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduled-lexer-testing
+  cancel-in-progress: false
+
+jobs:
+  lexer-generative-test:
+    name: Lexer generative test (Clang ASan/UBSan)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Clang and Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-rt-dev ninja-build
+      - name: Configure lexer test target
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake -S fuzz -B build/fuzz -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      - name: Build lexer test target
+        run: cmake --build build/fuzz
+      - name: Restore evolving lexer corpus
+        id: corpus-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build/fuzz/corpus
+          key: ${{ runner.os }}-lexer-corpus-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-lexer-corpus-
+      - name: Add repository seeds
+        run: |
+          mkdir -p build/fuzz/corpus build/fuzz/artifacts
+          cp -Rn fuzz/corpus/lexer/. build/fuzz/corpus/
+      - name: Run 15-minute lexer generative test
+        id: generative-test
+        run: |
+          set +e
+          ./build/fuzz/listopad_lexer_fuzz build/fuzz/corpus \
+            -dict=fuzz/lexer.dict \
+            -artifact_prefix=build/fuzz/artifacts/ \
+            -max_total_time=900 \
+            -max_len=65536 \
+            -timeout=5
+          status=$?
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Save evolving lexer corpus
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: build/fuzz/corpus
+          key: ${{ runner.os }}-lexer-corpus-${{ github.run_id }}
+      - name: Upload lexer corpus and findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scheduled-lexer-testing-${{ github.run_id }}
+          path: |
+            build/fuzz/corpus/
+            build/fuzz/artifacts/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Propagate lexer test failure
+        if: always()
+        run: |
+          if [ "${{ steps.generative-test.outputs.exit_code }}" != "0" ]; then
+            exit "${{ steps.generative-test.outputs.exit_code }}"
+          fi
