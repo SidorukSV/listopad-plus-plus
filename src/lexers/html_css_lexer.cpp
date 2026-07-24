@@ -182,14 +182,31 @@ class HtmlCssLexer final : public Scintilla::ILexer5 {
   }
   void SCI_METHOD Lex(const Sci_PositionU start, const Sci_Position length, int initial_style,
                       Scintilla::IDocument* document) override {
+    const Sci_Position document_length = document->Length();
+    if (document_length <= 0) return;
+    const Sci_Position requested_start =
+        (std::min)(document_length, static_cast<Sci_Position>(start));
+    const Sci_Position requested_end = (std::min)(document_length, requested_start + length);
+    // Scintilla may ask to recolour from the middle of a tag after an edit. The
+    // stock HTML lexer expects the state immediately before its start position;
+    // rewinding to the physical line preserves that context and prevents the
+    // rest of the tag (and following tags) from falling back to default text.
+    const Sci_Position expanded_start = document->LineStart(
+        document->LineFromPosition(requested_start));
+    if (expanded_start > 0) {
+      initial_style = static_cast<unsigned char>(
+          document->StyleAt(expanded_start - 1));
+    } else {
+      initial_style = SCE_H_DEFAULT;
+    }
+    // CSS styles are overlaid by this lexer and do not describe an HTML state.
+    // To LexHTML, the contents of <style> are ordinary raw text.
     if (initial_style >= kEmbeddedCssStyleBase) initial_style = SCE_H_DEFAULT;
-    html_->Lex(start, length, initial_style, document);
-    if (!css_ || document->Length() <= 0) return;
+    html_->Lex(static_cast<Sci_PositionU>(expanded_start),
+               requested_end - expanded_start, initial_style, document);
+    if (!css_) return;
 
     const char* text = document->BufferPointer();
-    const Sci_Position document_length = document->Length();
-    const Sci_Position requested_start = static_cast<Sci_Position>(start);
-    const Sci_Position requested_end = (std::min)(document_length, requested_start + length);
     for (Sci_Position position = 0; position + 6 <= document_length; ++position) {
       if (text[position] != '<' || !ascii_equal_at(text, document_length, position, "<style") ||
           !tag_boundary(position + 6 < document_length ? text[position + 6] : '\0')) continue;
@@ -197,7 +214,8 @@ class HtmlCssLexer final : public Scintilla::ILexer5 {
       if (tag_style != SCE_H_TAG && tag_style != SCE_H_TAGUNKNOWN) continue;
       const Sci_Position content_start = tag_end(text, document_length, position + 6);
       const Sci_Position content_end = find_closing_style(text, document_length, content_start);
-      if (content_start < requested_end && content_end > requested_start && content_end > content_start) {
+      if (content_start < requested_end && content_end > expanded_start &&
+          content_end > content_start) {
         CssSubDocument css_document(document, content_start, content_end - content_start);
         css_->Lex(0, content_end - content_start, SCE_CSS_DEFAULT, &css_document);
       }
