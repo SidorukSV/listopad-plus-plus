@@ -32,12 +32,20 @@ class EditorWindow final {
 
   static constexpr UINT kOpenRequestMessage = WM_APP + 1;
   static constexpr UINT kExternalChangeMessage = WM_APP + 2;
-  static constexpr UINT kSearchResultMessage = WM_APP + 3;
+ static constexpr UINT kSearchResultMessage = WM_APP + 3;
 
  private:
+  enum class ViewKind {
+    Text,
+    LargeText,
+    Hex,
+  };
+
   struct Tab {
     Document document;
+    ViewKind view_kind{ViewKind::Text};
     HWND view{nullptr};
+    HWND map{nullptr};
     bool external_notice_pending{false};
     std::vector<EmmetField> snippet_fields;
     std::size_t snippet_index{0};
@@ -63,6 +71,7 @@ class EditorWindow final {
   void update_ui();
   void rebuild_menu();
   void prepare_menu_bar(HMENU menu);
+  void refresh_view_menu_state();
   void apply_window_theme();
   void recreate_theme_brushes();
   void persist_window_bounds();
@@ -80,6 +89,12 @@ class EditorWindow final {
   int active_index() const;
   void activate_tab(int index);
   void add_empty_tab();
+  [[nodiscard]] static bool editable(const Tab& tab) {
+    return tab.view_kind == ViewKind::Text;
+  }
+  void destroy_tab_views(Tab& tab);
+  bool create_tab_views(Tab& tab);
+  bool switch_tab_view(Tab& tab, ViewKind requested);
   bool open_file(const std::filesystem::path& path, const Encoding* forced = nullptr);
   bool close_tab(int index);
   bool confirm_close(Tab& tab);

@@ -25,6 +25,7 @@ struct Settings {
   int font_size{11};
   int indent_size{2};
   bool indent_with_tabs{false};
+  bool show_document_map{true};
   std::uint64_t large_file_threshold{128ull * 1024ull * 1024ull};
   std::string fallback_encoding{"auto"};
   WindowBounds window;

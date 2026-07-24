@@ -3,12 +3,6 @@
   <assemblyIdentity version="@PROJECT_VERSION@.0" processorArchitecture="amd64"
                     name="ListopadPP" type="win32"/>
   <description>Listopad++</description>
-  <!-- No <msix> identity element on purpose. It binds this executable to the
-       sparse package, and the shell then draws the taskbar button on a backplate
-       filled with the system accent colour. Neither altform-unplated assets nor
-       an explicit AppUserModelID suppress that. The package exists only to host
-       the context-menu COM server, which needs no identity from the editor, so
-       the editor runs unpackaged and keeps a clean icon. -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security><requestedPrivileges><requestedExecutionLevel level="asInvoker" uiAccess="false"/></requestedPrivileges></security>
   </trustInfo>

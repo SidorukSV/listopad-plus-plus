@@ -2,8 +2,7 @@
 param(
   [ValidateSet('debug', 'release')][string]$Preset = 'release',
   [string]$VcpkgRoot = (Join-Path $PSScriptRoot '..\.deps\vcpkg'),
-  [string]$Version = '0.1.2',
-  [string]$Publisher = 'CN=ListopadPP Development',
+  [string]$Version = '0.1.4',
   [switch]$SkipTests
 )
 
@@ -27,8 +26,7 @@ $env:VCPKG_ROOT = $VcpkgRoot
 
 Push-Location $repo
 try {
-  & cmake --preset $Preset "-DLISTOPAD_VERSION=$Version" `
-    "-DLISTOPAD_PACKAGE_PUBLISHER=$Publisher"
+  & cmake --preset $Preset "-DLISTOPAD_VERSION=$Version"
   if ($LASTEXITCODE) { throw 'CMake configure failed.' }
   & cmake --build --preset $Preset --parallel
   if ($LASTEXITCODE) { throw 'CMake build failed.' }

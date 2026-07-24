@@ -2,6 +2,24 @@
 #include "resource.h"
 #include "listopad/version.h"
 
+// Keep the localized classic context-menu caption in the main executable.
+// Explorer resolves this indirect string using the current Windows UI language.
+#pragma code_page(65001)
+
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+STRINGTABLE
+BEGIN
+  IDS_CONTEXT_MENU_OPEN "Open in Listopad++"
+END
+
+LANGUAGE LANG_RUSSIAN, SUBLANG_RUSSIAN_RUSSIA
+STRINGTABLE
+BEGIN
+  IDS_CONTEXT_MENU_OPEN "Открыть в Listopad++"
+END
+
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+
 // Subset of the Phosphor icon font (MIT, see assets/Phosphor-LICENSE.txt),
 // trimmed to just the toolbar glyphs and loaded privately at runtime.
 IDR_PHOSPHOR_FONT RCDATA "assets/Phosphor-Subset.ttf"

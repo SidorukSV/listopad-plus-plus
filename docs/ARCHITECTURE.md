@@ -1,39 +1,61 @@
-# Architecture
+# Архитектура
 
 ```text
-Explorer / command line
-        │ versioned OpenFilesRequest
+Проводник / командная строка
+        │ версионированный OpenFilesRequest
         ▼
-ListopadPP.exe (unelevated, one process per user)
-  ├─ Win32 shell window, tabs and status UI
-  ├─ Scintilla + all static Lexilla lexer modules
-  ├─ UTF-8 documents / encoding and EOL metadata
-  ├─ ReadDirectoryChangesW watchers
-  ├─ cancellable PCRE2 workers
-  ├─ lazy QuickJS-NG + fixed Emmet bundle
-  └─ memory-mapped LargeFileView
-        │ authenticated SaveRequest, only after ACCESS_DENIED
+ListopadPP.exe (без повышения прав, один процесс на пользователя)
+  ├─ окно оболочки Win32, вкладки и интерфейс состояния
+  ├─ Scintilla и все статические модули лексеров Lexilla
+  ├─ документы UTF-8, метаданные кодировки и окончаний строк
+  ├─ наблюдатели ReadDirectoryChangesW
+  ├─ отменяемые рабочие потоки PCRE2
+  ├─ лениво создаваемый QuickJS-NG и фиксированный комплект Emmet
+  ├─ кешированная пропорциональная карта DocumentMap
+  ├─ LargeFileView с отображением файла в память
+  └─ HexViewWindow с отображением файла в память
+        │ аутентифицированный SaveRequest, только после ACCESS_DENIED
         ▼
-ListopadElevated.exe (session broker, minimal command set)
+ListopadElevated.exe (сеансовый брокер, минимальный набор команд)
 ```
 
-`listopad_core` owns deterministic, testable services: command-line and IPC
-serialization, encoding, document loading, fingerprinted atomic I/O, PCRE2,
-formatters, Emmet and settings. It contains no editor window.
+`listopad_core` содержит детерминированные и тестируемые службы: сериализацию
+командной строки и IPC, работу с кодировками, загрузку документов, атомарный
+ввод-вывод с проверкой отпечатка, PCRE2, средства форматирования, Emmet и
+настройки. Окно редактора в него не входит.
 
-`ListopadShell.dll` implements only `IExplorerCommand` and `IClassFactory`. It
-enumerates selected `IShellItem` paths and starts `ListopadPP.exe`; no editor,
-lexer, parser or JS runtime is loaded into Explorer.
+Интеграция с оболочкой представляет собой классическую команду реестра,
+которая напрямую запускает `ListopadPP.exe`. MSI регистрирует её для всей
+машины, а редактор может зарегистрировать такую же команду для текущего
+пользователя переносной сборки. Библиотека расширения в Проводник не
+загружается.
 
-Large files use a read-only file mapping and paint only visible lines in a
-custom child window. Search runs against the mapping on a cancellable worker.
-Editing, syntax highlighting, replacement, formatting and Emmet are disabled in
-this mode.
+У каждой вкладки есть один активный `ViewKind`: редактируемый текст Scintilla,
+доступный только для чтения `LargeFileView` или доступный только для чтения
+`HexViewWindow`. Режимы большого текста и шестнадцатеричного просмотра
+используют отображение файла в память и отрисовывают только видимые строки.
+Поиск выполняется по отображённой памяти в отменяемых рабочих потоках.
+Редактирование, замена, форматирование и Emmet в этих режимах отключены.
 
-Normal saves are optimistic transactions guarded by a strong fingerprint
-(volume serial, 128-bit file ID, length and last-write time). External directory
-events are only hints; the fingerprint decides whether the document diverged.
+Редактируемая вкладка также может содержать узкую пользовательскую карту
+`DocumentMap`. Она выбирает логические строки и цвета их стилей Scintilla в
+кешированное растровое изображение всего документа. При прокрутке
+перерисовывается только пропорциональный индикатор видимой области, поэтому
+обзор остаётся неподвижным. Редактирование, изменение размера и смена темы
+сбрасывают кешированный предпросмотр. Жесты мыши напрямую сопоставляют
+относительную позицию на карте со строкой документа.
 
-Runtime-heavy components are demand driven. QuickJS is created on the first
-Emmet action; formatters are called only from the format command; the UAC broker
-starts only after an access-denied save.
+Встроенные метаданные языков служат единым источником для определения
+расширения, фильтров диалога «Сохранить как» и канонического расширения,
+добавляемого к новому файлу. Лексеры Lexilla без метаданных остаются
+доступными, но не пытаются угадать суффикс.
+
+Обычное сохранение представляет собой оптимистическую транзакцию, защищённую
+надёжным отпечатком: серийным номером тома, 128-битным идентификатором файла,
+длиной и временем последней записи. Внешние события каталога служат только
+подсказками; именно отпечаток определяет, разошлось ли содержимое документа.
+
+Компоненты с тяжёлыми средами выполнения создаются по требованию. QuickJS
+создаётся при первом действии Emmet, средства форматирования вызываются только
+командой форматирования, а брокер UAC запускается лишь после отказа в доступе
+при сохранении.

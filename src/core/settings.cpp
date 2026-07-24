@@ -59,6 +59,7 @@ Settings load_settings() {
     if (yyjson_val* value = yyjson_obj_get(root, "fontSize"); yyjson_is_int(value)) settings.font_size = static_cast<int>(yyjson_get_int(value));
     if (yyjson_val* value = yyjson_obj_get(root, "indentSize"); yyjson_is_int(value)) settings.indent_size = static_cast<int>(yyjson_get_int(value));
     if (yyjson_val* value = yyjson_obj_get(root, "indentWithTabs"); yyjson_is_bool(value)) settings.indent_with_tabs = yyjson_get_bool(value);
+    if (yyjson_val* value = yyjson_obj_get(root, "documentMap"); yyjson_is_bool(value)) settings.show_document_map = yyjson_get_bool(value);
     if (yyjson_val* value = yyjson_obj_get(root, "largeFileThreshold"); yyjson_is_uint(value)) settings.large_file_threshold = yyjson_get_uint(value);
     if (yyjson_val* window = yyjson_obj_get(root, "window"); yyjson_is_obj(window)) {
       const auto read_int = [](yyjson_val* obj, const char* key, int& target) {
@@ -91,6 +92,7 @@ bool save_settings(const Settings& settings) {
   yyjson_mut_obj_add_int(doc, root, "fontSize", settings.font_size);
   yyjson_mut_obj_add_int(doc, root, "indentSize", settings.indent_size);
   yyjson_mut_obj_add_bool(doc, root, "indentWithTabs", settings.indent_with_tabs);
+  yyjson_mut_obj_add_bool(doc, root, "documentMap", settings.show_document_map);
   yyjson_mut_obj_add_uint(doc, root, "largeFileThreshold", settings.large_file_threshold);
   yyjson_mut_obj_add_str(doc, root, "fallbackEncoding", settings.fallback_encoding.c_str());
   if (settings.window.valid) {

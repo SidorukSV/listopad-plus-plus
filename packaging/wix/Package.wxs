@@ -2,11 +2,12 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="Listopad++" Manufacturer="Listopad++ Contributors"
-           Version="$(var.ProductVersion)" UpgradeCode="3D765D12-AE8D-4C77-9F39-C5CBF4884FD9"
+           Version="$(var.ProductVersion)" ProductCode="$(var.ProductCode)"
+           UpgradeCode="3D765D12-AE8D-4C77-9F39-C5CBF4884FD9"
            Scope="perMachine" Compressed="yes" Codepage="1251" Language="1049">
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Listopad++ is already installed." />
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of Listopad++ is already installed." />
     <MediaTemplate EmbedCab="yes" />
-    <Property Id="LISTOPAD_REGISTER_SPARSE" Value="$(var.RegisterSparse)" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Listopad++">
@@ -17,14 +18,11 @@
     <StandardDirectory Id="ProgramMenuFolder" />
     <StandardDirectory Id="DesktopFolder" />
 
-    <!-- The packaged application is hidden from the app list (AppListEntry
-         "none"), because it only hosts the context-menu server. Without these
-         shortcuts a machine-wide install left nothing in Start at all. -->
     <Component Id="DesktopShortcut" Directory="DesktopFolder" Bitness="always64">
       <Shortcut Id="ListopadDesktopShortcut" Name="Listopad++"
                 Description="Fast offline text editor"
                 Target="[INSTALLFOLDER]ListopadPP.exe" WorkingDirectory="INSTALLFOLDER" />
-      <RegistryValue Root="HKLM" Key="Software\Listopad++" Name="DesktopShortcut"
+      <RegistryValue Root="HKCU" Key="Software\Listopad++" Name="DesktopShortcut"
                      Type="integer" Value="1" KeyPath="yes" />
     </Component>
 
@@ -36,17 +34,11 @@
         <File Id="ListopadPPExe" Source="$(var.StageDir)\ListopadPP.exe" KeyPath="yes">
           <Shortcut Id="ListopadStartMenuShortcut" Directory="ProgramMenuFolder"
                     Name="Listopad++" Description="Fast offline text editor"
-                    WorkingDirectory="INSTALLFOLDER" Advertise="no" />
+                    WorkingDirectory="INSTALLFOLDER" Advertise="yes" />
         </File>
       </Component>
       <Component Bitness="always64">
         <File Id="ListopadElevatedExe" Source="$(var.StageDir)\ListopadElevated.exe" KeyPath="yes" />
-      </Component>
-      <Component Bitness="always64">
-        <File Id="ListopadShellDll" Source="$(var.StageDir)\ListopadShell.dll" KeyPath="yes" />
-      </Component>
-      <Component Bitness="always64">
-        <File Id="ListopadShellHostExe" Source="$(var.StageDir)\ListopadShellHost.exe" KeyPath="yes" />
       </Component>
       <Component Bitness="always64">
         <File Id="ReadmeFile" Source="$(var.StageDir)\README.md" KeyPath="yes" />
@@ -57,15 +49,7 @@
       <Component Bitness="always64">
         <File Id="NoticesFile" Source="$(var.StageDir)\THIRD_PARTY_NOTICES.md" KeyPath="yes" />
       </Component>
-      <Component Bitness="always64">
-        <File Id="ShellIntegrationScript" Source="$(var.StageDir)\shell-integration.ps1"
-              KeyPath="yes" />
-      </Component>
     </ComponentGroup>
-
-    <Component Id="IdentityFiles" Directory="INSTALLFOLDER" Bitness="always64">
-      <File Id="IdentityPackage" Source="$(var.StageDir)\ListopadPP.Identity.msix" KeyPath="yes" />
-    </Component>
 
     <!-- Harvested from the staged directory: 48 logo variants, and the exact
          set changes whenever the asset generator gains a target size. Listing
@@ -78,17 +62,13 @@
       <Files Include="$(var.StageDir)\licenses\*.txt" />
     </ComponentGroup>
 
-    <!-- Registered unconditionally, including alongside the sparse package. The
-         modern menu is a Windows 11 surface, and it is not always the one the
-         user sees: restoring the classic menu hides every packaged verb, and
-         registering the package fails outright when its certificate is not
-         trusted. Without this entry those users get no command at all. On
-         Windows 11 the two do not collide — the packaged verb appears at the top
-         level, this one under "Show more options". -->
+    <!-- Deliberately only a classic menu entry. On Windows 11 it appears under
+         "Show more options"; no sparse package or Explorer COM server is
+         installed. The localized caption lives in the main executable. -->
     <Component Id="ClassicContextMenu" Directory="INSTALLFOLDER" Bitness="always64">
       <RegistryKey Root="HKLM" Key="Software\Classes\*\shell\ListopadPP">
         <RegistryValue Name="MUIVerb" Type="string"
-                       Value="@[INSTALLFOLDER]ListopadShell.dll,-101" />
+                       Value="@[INSTALLFOLDER]ListopadPP.exe,-102" />
         <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]ListopadPP.exe" />
         <RegistryValue Name="MultiSelectModel" Type="string" Value="Player" />
         <RegistryKey Key="command">
@@ -102,7 +82,6 @@
     <Feature Id="Complete" Title="Listopad++" Description="Редактор и контекстное меню"
              Level="1" AllowAbsent="no">
       <ComponentGroupRef Id="ApplicationFiles" />
-      <ComponentRef Id="IdentityFiles" />
       <ComponentGroupRef Id="VisualAssets" />
       <ComponentGroupRef Id="DependencyLicenses" />
       <ComponentRef Id="ClassicContextMenu" />
@@ -117,28 +96,5 @@
 
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
     <ui:WixUI Id="WixUI_FeatureTree" InstallDirectory="INSTALLFOLDER" />
-
-    <!-- The logic lives in shell-integration.ps1. Windows Installer parses `{}`
-         in Formatted fields as conditional blocks, so an inline try/catch loses
-         its bodies before PowerShell runs and the action fails with exit 1.
-         Return="ignore" keeps a failed registration from aborting the install;
-         the script itself falls back to the classic menu. -->
-    <CustomAction Id="RegisterSparsePackage" Directory="INSTALLFOLDER"
-                  Execute="immediate" Impersonate="yes" Return="ignore"
-                  ExeCommand="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]shell-integration.ps1&quot;" />
-    <CustomAction Id="UnregisterSparsePackage" Directory="INSTALLFOLDER"
-                  Execute="immediate" Impersonate="yes" Return="ignore"
-                  ExeCommand="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]shell-integration.ps1&quot; -Remove" />
-    <InstallExecuteSequence>
-      <!-- No VersionNT64 gate. Windows Installer reports 603 for everything from
-           Windows 8.1 onwards, Windows 11 included, so a ">= 1000" test is never
-           true and silently skipped the registration, leaving the install with
-           no context menu at all. The app already requires Windows 10 through
-           its own manifest. -->
-      <Custom Action="RegisterSparsePackage" After="InstallFinalize"
-              Condition="NOT Installed AND LISTOPAD_REGISTER_SPARSE = &quot;1&quot;" />
-      <Custom Action="UnregisterSparsePackage" Before="RemoveFiles"
-              Condition="REMOVE = &quot;ALL&quot;" />
-    </InstallExecuteSequence>
   </Package>
 </Wix>

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.29)
-set(LISTOPAD_VERSION "0.1.2" CACHE STRING "Listopad++ semantic version")
+set(LISTOPAD_VERSION "0.1.4" CACHE STRING "Listopad++ semantic version")
 project(ListopadPP VERSION "${LISTOPAD_VERSION}" LANGUAGES C CXX RC)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -7,9 +7,6 @@ if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
 endif()
 
 option(LISTOPAD_BUILD_TESTS "Build unit tests" ON)
-set(LISTOPAD_PACKAGE_NAME "ListopadPP" CACHE STRING "Sparse identity package name")
-set(LISTOPAD_PACKAGE_PUBLISHER "CN=ListopadPP Development" CACHE STRING
-    "Publisher subject shared by the PE and sparse identity signatures")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -41,7 +38,11 @@ set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/ListopadIcon.rc"
 # claiming whatever version was built first.
 set(LISTOPAD_VERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/listopad/version.h")
 set_source_files_properties(
-  src/app/resources.rc src/elevated/resources.rc src/shell/resources.rc
+  src/app/resources.rc
+  PROPERTIES OBJECT_DEPENDS
+    "${LISTOPAD_VERSION_HEADER};${CMAKE_CURRENT_SOURCE_DIR}/src/app/resource.h")
+set_source_files_properties(
+  src/elevated/resources.rc
   PROPERTIES OBJECT_DEPENDS "${LISTOPAD_VERSION_HEADER}")
 
 add_library(listopad_core STATIC
@@ -51,6 +52,7 @@ add_library(listopad_core STATIC
   src/core/encoding.cpp
   src/core/file_io.cpp
   src/core/formatter.cpp
+  src/core/hex_view.cpp
   src/core/ipc_protocol.cpp
   src/core/language.cpp
   src/core/search.cpp
@@ -73,9 +75,11 @@ target_link_libraries(listopad_core PUBLIC
 
 add_executable(ListopadPP WIN32
   src/app/app.cpp
+  src/app/document_map.cpp
   src/app/editor_window.cpp
   src/app/elevated_client.cpp
   src/app/file_watcher.cpp
+  src/app/hex_view_window.cpp
   src/app/large_file_view.cpp
   src/app/single_instance.cpp
   src/app/resources.rc
@@ -86,7 +90,7 @@ target_compile_definitions(ListopadPP PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LE
 target_compile_options(ListopadPP PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(ListopadPP PRIVATE
   listopad_core listopad_scintilla listopad_lexilla
-  comctl32 comdlg32 dwmapi ole32 shell32 shlwapi uxtheme version wintrust)
+  comctl32 comdlg32 dwmapi msimg32 ole32 shell32 shlwapi uxtheme version wintrust)
 set_target_properties(ListopadPP PROPERTIES OUTPUT_NAME "ListopadPP")
 
 add_executable(ListopadElevated WIN32
@@ -100,22 +104,7 @@ target_compile_options(ListopadElevated PRIVATE /W4 /permissive- /utf-8 /EHsc)
 target_link_libraries(ListopadElevated PRIVATE listopad_core advapi32 bcrypt shell32 wintrust)
 target_link_options(ListopadElevated PRIVATE "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
 
-add_executable(ListopadShellHost WIN32
-  src/shellhost/main.cpp
-  "${CMAKE_CURRENT_BINARY_DIR}/ListopadIcon.rc")
-target_compile_definitions(ListopadShellHost PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
-target_compile_options(ListopadShellHost PRIVATE /W4 /permissive- /utf-8 /EHsc)
-
-add_library(ListopadShell SHARED
-  src/shell/shell_extension.cpp
-  src/shell/shell.def
-  src/shell/resources.rc)
-target_include_directories(ListopadShell PRIVATE include)
-target_compile_definitions(ListopadShell PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
-target_compile_options(ListopadShell PRIVATE /W4 /permissive- /utf-8 /EHsc)
-target_link_libraries(ListopadShell PRIVATE listopad_core ole32 shell32 shlwapi)
-
-install(TARGETS ListopadPP ListopadElevated ListopadShell ListopadShellHost
+install(TARGETS ListopadPP ListopadElevated
   RUNTIME DESTINATION . LIBRARY DESTINATION .)
 install(FILES portable.flag DESTINATION . OPTIONAL)
 
@@ -128,11 +117,11 @@ if(LISTOPAD_BUILD_TESTS)
     tests/encoding_tests.cpp
     tests/file_io_tests.cpp
     tests/formatter_tests.cpp
+    tests/hex_view_tests.cpp
     tests/ipc_tests.cpp
     tests/language_tests.cpp
     tests/lexer_tests.cpp
-    tests/search_tests.cpp
-    tests/shell_registration_tests.cpp)
+    tests/search_tests.cpp)
   target_compile_definitions(listopad_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
   target_compile_options(listopad_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
   target_link_libraries(listopad_tests PRIVATE listopad_core listopad_lexilla Catch2::Catch2WithMain)

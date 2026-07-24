@@ -4,56 +4,38 @@
 
 #include <algorithm>
 #include <array>
-#include <unordered_map>
+#include <cctype>
 
 namespace listopad {
 namespace {
 
 const std::array<LanguageInfo, 24> kLanguages{{
-    {"text", "null", "Plain text", false, false},
-    {"cpp", "cpp", "C / C++", false, false},
-    {"csharp", "cpp", "C#", false, false},
-    {"css", "css", "CSS", false, true},
-    {"scss", "css", "SCSS", false, true},
-    {"html", "hypertext", "HTML", true, false},
-    {"xml", "xml", "XML", true, false},
-    {"javascript", "cpp", "JavaScript", false, false},
-    {"jsx", "hypertext", "JavaScript JSX", true, false},
-    {"typescript", "cpp", "TypeScript", false, false},
-    {"tsx", "hypertext", "TypeScript JSX", true, false},
-    {"json", "json", "JSON", false, false},
-    {"python", "python", "Python", false, false},
-    {"rust", "rust", "Rust", false, false},
-    {"sql", "sql", "SQL", false, false},
-    {"markdown", "markdown", "Markdown", false, false},
-    {"powershell", "powershell", "PowerShell", false, false},
-    {"bsl", "bsl", "1C:Enterprise (BSL)", false, false},
-    {"onescript", "bsl", "OneScript", false, false},
-    {"shell", "bash", "Shell", false, false},
-    {"batch", "batch", "Batch", false, false},
-    {"yaml", "yaml", "YAML", false, false},
-    {"ini", "props", "INI / properties", false, false},
-    {"diff", "diff", "Diff", false, false},
+    {"text", "null", "Plain text", false, false, ".txt", {".txt", ".log"}},
+    {"cpp", "cpp", "C / C++", false, false, ".cpp",
+     {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"}},
+    {"csharp", "cpp", "C#", false, false, ".cs", {".cs"}},
+    {"css", "css", "CSS", false, true, ".css", {".css"}},
+    {"scss", "css", "SCSS", false, true, ".scss", {".scss", ".sass"}},
+    {"html", "hypertext", "HTML", true, false, ".html", {".htm", ".html", ".xhtml"}},
+    {"xml", "xml", "XML", true, false, ".xml", {".xml", ".xsd", ".xsl", ".svg"}},
+    {"javascript", "cpp", "JavaScript", false, false, ".js", {".js", ".mjs", ".cjs"}},
+    {"jsx", "hypertext", "JavaScript JSX", true, false, ".jsx", {".jsx"}},
+    {"typescript", "cpp", "TypeScript", false, false, ".ts", {".ts"}},
+    {"tsx", "hypertext", "TypeScript JSX", true, false, ".tsx", {".tsx"}},
+    {"json", "json", "JSON", false, false, ".json", {".json", ".jsonc"}},
+    {"python", "python", "Python", false, false, ".py", {".py", ".pyw"}},
+    {"rust", "rust", "Rust", false, false, ".rs", {".rs"}},
+    {"sql", "sql", "SQL", false, false, ".sql", {".sql"}},
+    {"markdown", "markdown", "Markdown", false, false, ".md", {".md", ".markdown"}},
+    {"powershell", "powershell", "PowerShell", false, false, ".ps1", {".ps1", ".psm1"}},
+    {"bsl", "bsl", "1C:Enterprise (BSL)", false, false, ".bsl", {".bsl"}},
+    {"onescript", "bsl", "OneScript", false, false, ".os", {".os"}},
+    {"shell", "bash", "Shell", false, false, ".sh", {".sh", ".bash"}},
+    {"batch", "batch", "Batch", false, false, ".cmd", {".cmd", ".bat"}},
+    {"yaml", "yaml", "YAML", false, false, ".yaml", {".yml", ".yaml"}},
+    {"ini", "props", "INI / properties", false, false, ".ini", {".ini", ".properties"}},
+    {"diff", "diff", "Diff", false, false, ".diff", {".diff", ".patch"}},
 }};
-
-const std::unordered_map<std::wstring, std::string> kExtensions{
-    {L".c", "cpp"},       {L".cc", "cpp"},       {L".cpp", "cpp"},
-    {L".cxx", "cpp"},     {L".h", "cpp"},        {L".hpp", "cpp"},
-    {L".cs", "csharp"},   {L".css", "css"},      {L".scss", "scss"},
-    {L".sass", "scss"},   {L".htm", "html"},     {L".html", "html"},
-    {L".xhtml", "html"},  {L".xml", "xml"},      {L".xsd", "xml"},
-    {L".xsl", "xml"},     {L".svg", "xml"},      {L".js", "javascript"},
-    {L".mjs", "javascript"}, {L".cjs", "javascript"}, {L".jsx", "jsx"},
-    {L".ts", "typescript"}, {L".tsx", "tsx"},    {L".json", "json"},
-    {L".jsonc", "json"},  {L".py", "python"},    {L".pyw", "python"},
-    {L".rs", "rust"},     {L".sql", "sql"},      {L".md", "markdown"},
-    {L".markdown", "markdown"}, {L".ps1", "powershell"},
-    {L".psm1", "powershell"}, {L".sh", "shell"}, {L".bash", "shell"},
-    {L".bsl", "bsl"},     {L".os", "onescript"},
-    {L".cmd", "batch"},   {L".bat", "batch"},    {L".yml", "yaml"},
-    {L".yaml", "yaml"},   {L".ini", "ini"},      {L".properties", "ini"},
-    {L".diff", "diff"},   {L".patch", "diff"},
-};
 
 }  // namespace
 
@@ -65,14 +47,41 @@ const LanguageInfo* language_by_id(const std::string_view id) {
   return it == kLanguages.end() ? nullptr : &*it;
 }
 
+const LanguageInfo* language_by_extension(std::string_view extension) {
+  std::string lower(extension);
+  std::transform(lower.begin(), lower.end(), lower.begin(),
+                 [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  if (!lower.empty() && lower.front() != '.') lower.insert(lower.begin(), '.');
+  const auto language = std::find_if(kLanguages.begin(), kLanguages.end(),
+      [&lower](const LanguageInfo& item) {
+        return std::find(item.extensions.begin(), item.extensions.end(), lower) !=
+               item.extensions.end();
+      });
+  return language == kLanguages.end() ? nullptr : &*language;
+}
+
+std::filesystem::path append_default_extension(
+    const std::filesystem::path& path, const std::string_view language_id) {
+  if (!path.extension().empty()) return path;
+  const std::wstring filename = path.filename().wstring();
+  if (filename.size() > 1 && filename.front() == L'.') return path;
+  const LanguageInfo* language = language_by_id(language_id);
+  if (!language || language->default_extension.empty()) return path;
+  std::filesystem::path result = path;
+  result += utf8_to_wide(language->default_extension);
+  return result;
+}
+
 LanguageInfo detect_language(const std::filesystem::path& path,
                              const std::string_view first_line) {
   const std::wstring filename = lowercase(path.filename().wstring());
   if (filename == L"makefile" || filename == L"dockerfile") {
     return *language_by_id("shell");
   }
-  const auto found = kExtensions.find(lowercase(path.extension().wstring()));
-  if (found != kExtensions.end()) return *language_by_id(found->second);
+  if (const LanguageInfo* found =
+          language_by_extension(wide_to_utf8(path.extension().wstring()))) {
+    return *found;
+  }
 
   if (first_line.starts_with("#!")) {
     if (first_line.find("python") != std::string_view::npos) return *language_by_id("python");
