@@ -78,7 +78,7 @@ void draw_preview_line(const HDC dc, const RECT& client, const HWND editor,
   const int width = std::max(
       1L, client.right - client.left - kHorizontalPadding * 2);
   sptr_t run_start = -1;
-  int run_style = 0;
+  unsigned char run_style = 0;
   const auto flush_run = [&](const sptr_t run_end) {
     if (run_start < 0 || run_end <= run_start) return;
     const int first_column = std::clamp(
@@ -87,18 +87,20 @@ void draw_preview_line(const HDC dc, const RECT& client, const HWND editor,
     const int last_column = std::clamp(
         static_cast<int>(sci(editor, SCI_GETCOLUMN, run_end)),
         first_column + 1, kPreviewColumns);
-    const int x1 = client.left + kHorizontalPadding +
-                   MulDiv(first_column, width, kPreviewColumns);
-    const int x2 = std::max(
-        x1 + 1, static_cast<int>(client.left) + kHorizontalPadding +
-                    MulDiv(last_column, width, kPreviewColumns));
-    SetDCPenColor(
+    RECT fragment{
+        client.left + kHorizontalPadding +
+            MulDiv(first_column, width, kPreviewColumns),
+        y,
+        client.left + kHorizontalPadding +
+            MulDiv(last_column, width, kPreviewColumns),
+        y + thickness};
+    fragment.right = std::max(fragment.left + 1, fragment.right);
+    SetDCBrushColor(
         dc, static_cast<COLORREF>(
-                sci(editor, SCI_STYLEGETFORE, run_style)));
-    for (int offset = 0; offset < thickness; ++offset) {
-      MoveToEx(dc, x1, y + offset, nullptr);
-      LineTo(dc, x2, y + offset);
-    }
+                sci(editor, SCI_STYLEGETFORE,
+                    static_cast<WPARAM>(run_style))));
+    FillRect(dc, &fragment,
+             static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
   };
 
   for (sptr_t position = line_start; position < preview_end; ++position) {
@@ -107,7 +109,7 @@ void draw_preview_line(const HDC dc, const RECT& client, const HWND editor,
     const bool whitespace =
         character == ' ' || character == '\t' || character == '\r' ||
         character == '\n';
-    const int style = static_cast<int>(
+    const auto style = static_cast<unsigned char>(
         sci(editor, SCI_GETSTYLEAT, static_cast<WPARAM>(position)));
     if (whitespace) {
       flush_run(position);
@@ -131,8 +133,6 @@ void draw_document_preview(const HDC dc, const RECT& client,
   const auto line_count =
       std::max<sptr_t>(1, static_cast<sptr_t>(
                               sci(state.editor, SCI_GETLINECOUNT)));
-  const HGDIOBJ previous_pen = SelectObject(dc, GetStockObject(DC_PEN));
-
   if (line_count <= height) {
     for (sptr_t line = 0; line < line_count; ++line) {
       const int top = client.top + static_cast<int>(
@@ -155,7 +155,6 @@ void draw_document_preview(const HDC dc, const RECT& client,
                         client.top + pixel, 1);
     }
   }
-  SelectObject(dc, previous_pen);
 }
 
 void ensure_preview(const HDC reference, const RECT& client, State& state) {
@@ -177,14 +176,6 @@ void ensure_preview(const HDC reference, const RECT& client, State& state) {
   }
   const HGDIOBJ previous = SelectObject(preview_dc, state.preview);
   RECT preview_rect{0, 0, width, height};
-  const auto styled_to =
-      static_cast<sptr_t>(sci(state.editor, SCI_GETENDSTYLED));
-  const auto document_length =
-      static_cast<sptr_t>(sci(state.editor, SCI_GETLENGTH));
-  if (styled_to < document_length) {
-    sci(state.editor, SCI_COLOURISE,
-        static_cast<WPARAM>(std::max<sptr_t>(0, styled_to)), -1);
-  }
   const COLORREF background = static_cast<COLORREF>(
       sci(state.editor, SCI_STYLEGETBACK, STYLE_DEFAULT));
   SetDCBrushColor(preview_dc, background);

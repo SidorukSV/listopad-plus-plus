@@ -33,7 +33,8 @@ class EditorWindow final {
 
   static constexpr UINT kOpenRequestMessage = WM_APP + 1;
   static constexpr UINT kExternalChangeMessage = WM_APP + 2;
- static constexpr UINT kSearchResultMessage = WM_APP + 3;
+  static constexpr UINT kSearchResultMessage = WM_APP + 3;
+  static constexpr UINT kDocumentMapRefreshMessage = WM_APP + 4;
 
  private:
   enum class ViewKind {

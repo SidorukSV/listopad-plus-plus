@@ -416,6 +416,26 @@ LRESULT EditorWindow::dispatch(const UINT message, const WPARAM wparam, const LP
     case kSearchResultMessage:
       handle_search_result(reinterpret_cast<void*>(lparam));
       return 0;
+    case kDocumentMapRefreshMessage:
+      for (Tab& tab : documents_) {
+        if (tab.view != reinterpret_cast<HWND>(wparam) ||
+            tab.map != reinterpret_cast<HWND>(lparam) ||
+            tab.view_kind != ViewKind::Text) {
+          continue;
+        }
+        // Full-document styling gives the map its syntax colours, but doing it
+        // while the replacement tab is being constructed can leave Windows
+        // displaying the old empty child surfaces. Run it after that command
+        // dispatch and repaint the two consumers explicitly.
+        sci(tab.view, SCI_COLOURISE, 0, -1);
+        DocumentMap::content_changed(tab.map, tab.view);
+        RedrawWindow(tab.view, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+        RedrawWindow(tab.map, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+        break;
+      }
+      return 0;
     case WM_SETTINGCHANGE:
       if (settings_.theme == "system") {
         const bool changed = dark_ != system_dark_theme();
@@ -1309,6 +1329,12 @@ void EditorWindow::activate_tab(const int index) {
   refresh_view_menu_state();
   update_ui();
   update_layout();
+  // Opening a file replaces the initial empty Scintilla and tab item during a
+  // single command dispatch. Windows may otherwise retain the already-painted
+  // empty child surfaces even though the new editor contains the full text.
+  RedrawWindow(window_, nullptr, nullptr,
+               RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN |
+                   RDW_UPDATENOW);
 }
 
 HWND EditorWindow::create_editor() {
@@ -1355,6 +1381,9 @@ bool EditorWindow::create_tab_views(Tab& tab) {
       DocumentMap::attach(tab.map, tab.view);
       DocumentMap::restyle(tab.map, tab.view, settings_.font_face, dark_);
       DocumentMap::sync(tab.map, tab.view);
+      PostMessageW(window_, kDocumentMapRefreshMessage,
+                   reinterpret_cast<WPARAM>(tab.view),
+                   reinterpret_cast<LPARAM>(tab.map));
       return true;
     case ViewKind::LargeText:
       tab.view = LargeFileView::create(window_, IDC_EDITOR);
@@ -1470,6 +1499,9 @@ bool EditorWindow::switch_tab_view(Tab& tab, const ViewKind requested) {
       DocumentMap::attach(tab.map, tab.view);
       DocumentMap::restyle(tab.map, tab.view, settings_.font_face, dark_);
       DocumentMap::sync(tab.map, tab.view);
+      PostMessageW(window_, kDocumentMapRefreshMessage,
+                   reinterpret_cast<WPARAM>(tab.view),
+                   reinterpret_cast<LPARAM>(tab.map));
     }
     refresh_view_menu_state();
     update_ui();
@@ -1954,6 +1986,9 @@ void EditorWindow::reload_active() {
         DocumentMap::attach(tab->map, tab->view);
         DocumentMap::restyle(tab->map, tab->view, settings_.font_face, dark_);
         DocumentMap::sync(tab->map, tab->view);
+        PostMessageW(window_, kDocumentMapRefreshMessage,
+                     reinterpret_cast<WPARAM>(tab->view),
+                     reinterpret_cast<LPARAM>(tab->map));
       }
       break;
     }
