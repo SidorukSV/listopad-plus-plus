@@ -34,7 +34,6 @@ HACCEL create_accelerators() {
 
 int WINAPI wWinMain(HINSTANCE module, HINSTANCE, wchar_t*, int show_command) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-  listopad::record_executable_location();
   const listopad::CommandLine command = listopad::current_command_line();
   listopad::Settings settings = listopad::load_settings();
   if (command.shell_registration == listopad::ShellRegistration::Register)

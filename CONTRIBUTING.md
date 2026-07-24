@@ -1,18 +1,21 @@
-# Contributing to Listopad++
+# Участие в разработке Listopad++
 
-Listopad++ accepts changes only through pull requests. Direct pushes to `main`
-are blocked for maintainers and administrators as well as external
-contributors.
+Listopad++ принимает изменения только через запросы на включение изменений
+(pull requests). Прямые отправки в `main` заблокированы как для сопровождающих
+и администраторов, так и для внешних участников.
 
-1. Fork the repository, or create a short-lived branch if you are a
-   collaborator.
-2. Build the project and run the Debug and Release tests.
-3. Open a pull request against `main` and keep its scope focused.
-4. Wait for the required Windows x64 check before merging.
+1. Создайте форк репозитория или короткоживущую ветку, если у вас есть доступ
+   участника.
+2. Соберите проект и запустите тесты в конфигурациях Debug и Release.
+3. Откройте запрос на включение изменений в `main` и не расширяйте его за рамки
+   одной задачи.
+4. Перед слиянием дождитесь успешного завершения обязательной проверки
+   Windows x64.
 
-Use squash or rebase merging to keep the public history linear. Never commit
-PFX files, private keys, production certificates, signing passwords, build
-directories or packaged output.
+Используйте слияние со схлопыванием (squash) или перебазированием (rebase),
+чтобы публичная история оставалась линейной. Никогда не добавляйте в коммиты
+PFX-файлы, закрытые ключи, производственные сертификаты, пароли подписи,
+каталоги сборки и готовые пакеты.
 
-For sensitive security reports, follow [SECURITY.md](SECURITY.md) instead of
-opening a public issue.
+Сведения о конфиденциальных отчётах об уязвимостях приведены в
+[SECURITY.md](SECURITY.md). Не создавайте для них публичные задачи.

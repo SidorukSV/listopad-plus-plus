@@ -1,40 +1,44 @@
-# Repository and release model
+# Модель репозитория и выпусков
 
-Listopad++ uses one public canonical repository and a trunk-based workflow.
-Public visibility does not grant write access: maintainers receive explicit
-repository access, while everyone else contributes through a fork.
+Listopad++ использует один канонический публичный репозиторий и магистральную
+модель разработки. Публичная доступность не даёт права на запись:
+сопровождающие получают его явно, а остальные участники вносят изменения через
+форки.
 
-## Change flow
+## Порядок внесения изменений
 
-All work starts on a short-lived branch and reaches `main` through a pull
-request. The `main` branch is always releasable and protected from direct
-pushes, force pushes and deletion. Its required Windows x64 check builds and
-tests both Debug and Release configurations.
+Работа начинается в короткоживущей ветке и попадает в `main` через запрос на
+включение изменений (pull request). Ветка `main` всегда готова к выпуску и
+защищена от прямых и принудительных отправок, а также от удаления. Обязательная
+проверка Windows x64 собирает и тестирует конфигурации Debug и Release.
 
-The initial branch rule requires a pull request but no approving review, so a
-single maintainer is not locked out of the project. Once a second active
-maintainer is available, increase the required approval count to one and
-enable required CODEOWNERS approval for release and trust-boundary files.
+Изначально правило ветки требует запрос на включение изменений, но не требует
+одобряющей рецензии, чтобы единственный сопровождающий не потерял возможность
+работать с проектом. Когда появится второй активный сопровождающий, увеличьте
+обязательное число одобрений до одного и включите обязательное одобрение
+CODEOWNERS для файлов выпуска и границ доверия.
 
-## Releases
+## Выпуски
 
-The Release workflow has two equivalent entry points:
+Процесс выпуска `Release` можно запустить двумя равнозначными способами:
 
-- pushing a semantic version tag such as `v0.1.2`;
-- running the workflow manually and entering `0.1.2` if the tag was forgotten.
+- отправить тег семантической версии, например `v0.1.4`;
+- запустить процесс вручную и ввести `0.1.4`, если тег не был создан.
 
-A manual run verifies that its selected commit belongs to `main`, creates the
-missing annotated tag, builds and tests the exact version, packages the ZIP,
-MSIX and MSI, writes SHA-256 checksums and publishes a GitHub Release. An
-existing tag that points to a different commit is never moved.
+При ручном запуске проверяется, что выбранный коммит принадлежит `main`.
+Затем создаётся отсутствующий аннотированный тег, собирается и тестируется
+точно указанная версия, упаковываются ZIP и MSI, вычисляются контрольные
+суммы SHA-256 и публикуется выпуск GitHub. Существующий тег, указывающий на
+другой коммит, никогда не перемещается.
 
-The release job uses the `production` GitHub Environment. Production signing
-is enabled by adding these environment values:
+Задание выпуска использует окружение GitHub `production`. Чтобы включить
+производственную подпись `ListopadPP.exe` и `ListopadElevated.exe`, добавьте в
+это окружение следующие секреты:
 
-- variable `LISTOPAD_PUBLISHER` with the certificate subject;
-- secret `LISTOPAD_PFX_BASE64` with the base64-encoded PFX;
-- secret `LISTOPAD_PFX_PASSWORD` with its password.
+- секрет `LISTOPAD_PFX_BASE64` с PFX в кодировке Base64;
+- секрет `LISTOPAD_PFX_PASSWORD` с паролем от него.
 
-Without those secrets, CI still creates a clearly unsigned development build;
-the UAC broker and modern Windows 11 context-menu integration remain disabled
-by design. Signing secrets must never be stored in the repository.
+Без этих секретов CI всё равно создаёт явно неподписанную сборку для
+разработки, а брокер UAC в Release намеренно отключается. MSI остаётся
+неподписанным даже при настроенной подписи PE-файлов. Секреты подписи нельзя
+хранить в репозитории.

@@ -1,36 +1,41 @@
-# Security model
+# Модель безопасности
 
-Listopad++ does not make network requests and does not load plugins. Untrusted
-file contents are processed in-process, so parser and lexer dependencies remain
-part of the normal desktop-app attack surface and should be updated deliberately
-after review.
+Listopad++ не выполняет сетевых запросов и не загружает плагины. Содержимое
+недоверенных файлов обрабатывается внутри процесса, поэтому зависимости
+парсеров и лексеров остаются частью обычной поверхности атаки настольного
+приложения. Обновлять их следует осознанно и только после проверки.
 
-## Elevated save broker
+## Брокер сохранения с повышенными правами
 
-`ListopadElevated.exe` has one operation: atomically replace a canonical file
-with caller-supplied bytes. It cannot start processes, alter ACLs, manipulate
-services, or execute content.
+`ListopadElevated.exe` выполняет одну операцию: атомарно заменяет файл по
+каноническому пути байтами, переданными вызывающей стороной. Он не может
+запускать процессы, изменять списки контроля доступа (ACL), управлять службами
+или исполнять содержимое.
 
-The editor creates a byte-mode named pipe whose name contains its PID and a
-128-bit CSPRNG nonce. The pipe rejects remote clients and has a protected DACL.
-After UAC elevation both sides verify the other pipe endpoint PID. The broker
-also verifies the parent image name and directory. Release builds require valid
-offline Authenticode policy for both binaries and an identical leaf signing
-certificate.
+Редактор создаёт именованный канал в байтовом режиме, имя которого содержит его
+PID и 128-битное случайное значение CSPRNG. Канал отклоняет удалённых клиентов
+и защищён списком DACL. После повышения прав через UAC каждая сторона проверяет
+PID другой стороны канала. Брокер также проверяет имя и каталог образа
+родительского процесса. В релизных сборках оба исполняемых файла должны
+успешно проходить автономную проверку Authenticode и иметь один и тот же
+конечный сертификат подписи.
 
-Each versioned request includes a monotonically increasing request id, canonical
-path, expected volume/file ID/size/write-time fingerprint, byte length and
-SHA-256 digest. Metadata and content lengths are bounded. The broker recomputes
-the digest, rechecks the fingerprint immediately before replace, writes a
-sibling temporary file, flushes it, then uses `ReplaceFileW` or a write-through
-move. It exits when the pipe or editor closes.
+Каждый версионированный запрос содержит монотонно возрастающий идентификатор,
+канонический путь, ожидаемый отпечаток тома, идентификатора файла, размера и
+времени последней записи, длину содержимого в байтах и хеш SHA-256. Длина
+метаданных и содержимого ограничена. Брокер заново вычисляет хеш, непосредственно
+перед заменой повторно проверяет отпечаток, записывает временный файл в том же
+каталоге, сбрасывает его на диск, а затем вызывает `ReplaceFileW` или выполняет
+перемещение со сквозной записью. При закрытии канала или редактора брокер
+завершает работу.
 
-Explicit Overwrite accepts the disk version visible when that save begins; it
-does not authorize overwriting another change that arrives while the temporary
-file is being written.
+Явная команда «Перезаписать» принимает версию файла на диске, видимую в момент
+начала сохранения. Она не разрешает перезаписывать ещё одно изменение,
+появившееся во время записи временного файла.
 
-## Reporting vulnerabilities
+## Сообщение об уязвимостях
 
-Do not include sensitive file contents, signing keys or PFX passwords in a
-public report. Provide a minimal reproducer, affected version and Windows build
-to the project maintainers through a private security advisory.
+Не включайте в публичный отчёт конфиденциальное содержимое файлов, ключи
+подписи и пароли PFX. Отправьте сопровождающим проекта минимальный пример
+воспроизведения, затронутую версию приложения и номер сборки Windows через
+приватное уведомление об уязвимости.

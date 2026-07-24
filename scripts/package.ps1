@@ -1,8 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$Version = '0.1.2',
-  [string]$Publisher = 'CN=ListopadPP Development',
-  [string]$PackageName = 'ListopadPP',
+  [string]$Version = '0.1.4',
   [string]$PfxPath,
   [securestring]$PfxPassword,
   [string]$SignCommand,
@@ -13,8 +11,20 @@ $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $out = Join-Path $repo 'out'
 $stage = Join-Path $out 'stage'
-$identity = Join-Path $out 'identity'
 $build = Join-Path $repo 'build\release'
+
+if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+  throw "Version must have the form MAJOR.MINOR.PATCH; got '$Version'."
+}
+
+# Remove outputs produced by the retired sparse-package pipeline so a local
+# packaging run cannot look as if it still emits MSIX artifacts.
+foreach ($obsolete in (Join-Path $out 'identity'), (Join-Path $out 'shellext'),
+                      (Join-Path $out 'ListopadPP.Identity.msix')) {
+  if (Test-Path -LiteralPath $obsolete) {
+    Remove-Item -LiteralPath $obsolete -Recurse -Force
+  }
+}
 
 function Reset-ChildDirectory([string]$Path) {
   $resolvedParent = [IO.Path]::GetFullPath((Split-Path $Path))
@@ -39,34 +49,57 @@ function Find-LockedFile([string]$Path) {
   return $null
 }
 
+# A major upgrade needs a new ProductCode for every released version, while a
+# rebuild of that same version must keep the same code. Derive an RFC 4122 v5
+# UUID from the permanent UpgradeCode namespace and the version instead of
+# letting WiX generate a fresh ProductCode on every invocation.
+function Get-ProductCode([string]$ProductVersion) {
+  $namespace = [guid]'3D765D12-AE8D-4C77-9F39-C5CBF4884FD9'
+  $namespaceBytes = $namespace.ToByteArray()
+  [Array]::Reverse($namespaceBytes, 0, 4)
+  [Array]::Reverse($namespaceBytes, 4, 2)
+  [Array]::Reverse($namespaceBytes, 6, 2)
+
+  $nameBytes = [Text.Encoding]::UTF8.GetBytes("ListopadPP/windows-x64/$ProductVersion")
+  $inputBytes = [byte[]]::new($namespaceBytes.Length + $nameBytes.Length)
+  [Buffer]::BlockCopy($namespaceBytes, 0, $inputBytes, 0, $namespaceBytes.Length)
+  [Buffer]::BlockCopy($nameBytes, 0, $inputBytes, $namespaceBytes.Length, $nameBytes.Length)
+
+  $sha1 = [Security.Cryptography.SHA1]::Create()
+  try {
+    $hash = $sha1.ComputeHash($inputBytes)
+  } finally {
+    $sha1.Dispose()
+  }
+  $hash[6] = [byte](($hash[6] -band 0x0f) -bor 0x50)
+  $hash[8] = [byte](($hash[8] -band 0x3f) -bor 0x80)
+  $hex = -join ($hash[0..15] | ForEach-Object { $_.ToString('x2') })
+  return ('{0}-{1}-{2}-{3}-{4}' -f $hex.Substring(0, 8), $hex.Substring(8, 4),
+          $hex.Substring(12, 4), $hex.Substring(16, 4), $hex.Substring(20, 12)).ToUpperInvariant()
+}
+
 if (-not $SkipBuild) {
-  & (Join-Path $PSScriptRoot 'build.ps1') -Preset release -Version $Version -Publisher $Publisher
+  & (Join-Path $PSScriptRoot 'build.ps1') -Preset release -Version $Version
 }
 & (Join-Path $PSScriptRoot 'check-licenses.ps1') -BuildDirectory $build
 
 Reset-ChildDirectory $stage
-Reset-ChildDirectory $identity
 & cmake --install $build --prefix $stage
 if ($LASTEXITCODE) { throw 'CMake install failed.' }
 Copy-Item (Join-Path $repo 'README.md'), (Join-Path $repo 'LICENSE'), `
           (Join-Path $repo 'THIRD_PARTY_NOTICES.md') -Destination $stage
 & (Join-Path $PSScriptRoot 'generate-assets.ps1') -Destination (Join-Path $stage 'Assets')
-# Installed alongside the binaries: the MSI custom actions run it instead of an
-# inline command, which Windows Installer would mangle.
-Copy-Item (Join-Path $repo 'packaging\wix\shell-integration.ps1') $stage -Force
-
-$sdkBin = Get-ChildItem (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin') -Directory |
-  Where-Object { $_.Name -match '^\d+\.\d+\.' } | Sort-Object Name -Descending | Select-Object -First 1
-if (-not $sdkBin) { throw 'Windows SDK packaging tools were not found.' }
-$makeAppx = Join-Path $sdkBin.FullName 'x64\makeappx.exe'
-$makePri = Join-Path $sdkBin.FullName 'x64\makepri.exe'
-$signTool = Join-Path $sdkBin.FullName 'x64\signtool.exe'
 
 function Invoke-Signer([string]$Path) {
   if ($SignCommand) {
     & $SignCommand $Path
     if ($LASTEXITCODE) { throw "External signing failed for $Path" }
   } elseif ($PfxPath) {
+    $sdkBin = Get-ChildItem (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin') -Directory |
+      Where-Object { $_.Name -match '^\d+\.\d+\.' } |
+      Sort-Object Name -Descending | Select-Object -First 1
+    if (-not $sdkBin) { throw 'Windows SDK signing tool was not found.' }
+    $signTool = Join-Path $sdkBin.FullName 'x64\signtool.exe'
     $password = if ($PfxPassword) {
       $credential = [pscredential]::new('pfx', $PfxPassword)
       $credential.GetNetworkCredential().Password
@@ -80,59 +113,7 @@ if ($PfxPath -or $SignCommand) {
   Get-ChildItem $stage -File | Where-Object Extension -In '.exe', '.dll' |
     ForEach-Object { Invoke-Signer $_.FullName }
 } else {
-  Write-Warning 'Artifacts are unsigned. Release UAC saving and modern Windows 11 context-menu registration will remain disabled.'
-}
-
-$manifest = Get-Content -Raw -Encoding UTF8 (Join-Path $repo 'packaging\msix\AppxManifest.xml.in')
-$manifest = $manifest.Replace('@PACKAGE_NAME@', $PackageName).Replace('@PUBLISHER@', $Publisher).Replace('@PACKAGE_VERSION@', "$Version.0")
-$manifestPath = Join-Path $identity 'AppxManifest.xml'
-[IO.File]::WriteAllText($manifestPath, $manifest, [Text.UTF8Encoding]::new($false))
-
-# The shell reads the taskbar and Start logos from the package payload, not from
-# the external content location, so the visual assets must live inside the MSIX
-# and the resource index must be built over the very directory that is packed.
-$identityAssets = Join-Path $identity 'Assets'
-Copy-Item (Join-Path $stage 'Assets') $identity -Recurse -Force
-$logoCount = (Get-ChildItem $identityAssets -Filter '*.png' -File).Count
-if ($logoCount -lt 1) { throw 'No visual assets were staged into the identity package.' }
-foreach ($required in 'ListopadPP-StoreLogo.png', 'ListopadPP-Square150x150Logo.png',
-                      'ListopadPP-Square44x44Logo.png') {
-  if (-not (Test-Path (Join-Path $identityAssets $required))) {
-    throw "Manifest references a missing visual asset: Assets\$required"
-  }
-}
-
-$priConfig = Join-Path $identity 'priconfig.xml'
-$priPath = Join-Path $identity 'resources.pri'
-& $makePri createconfig /cf $priConfig /dq en-US /o
-if ($LASTEXITCODE) { throw 'PRI configuration creation failed.' }
-& $makePri new /pr $identity /cf $priConfig /mn $manifestPath /of $priPath /o
-if ($LASTEXITCODE) { throw 'Package resource index creation failed.' }
-Remove-Item -LiteralPath $priConfig -Force
-$msix = Join-Path $out 'ListopadPP.Identity.msix'
-if (Test-Path $msix) { Remove-Item -LiteralPath $msix -Force }
-& $makeAppx pack /o /nv /d $identity /p $msix
-if ($LASTEXITCODE) { throw 'Sparse identity package creation failed.' }
-if ($PfxPath -or $SignCommand) { Invoke-Signer $msix }
-Copy-Item $msix (Join-Path $stage 'ListopadPP.Identity.msix') -Force
-
-# External content location for the sparse package. Keeping it to just the
-# context-menu server and the declared host is hygiene, not a hard requirement:
-# a package does not block undeclared binaries placed beside it (verified). The
-# editor is excluded because nothing in the package needs it, and a narrow
-# external location makes the boundary obvious.
-$shellExt = Join-Path $out 'shellext'
-Reset-ChildDirectory $shellExt
-Copy-Item (Join-Path $stage 'ListopadShell.dll') $shellExt -Force
-# Never executed; it only satisfies the manifest's Executable attribute.
-Copy-Item (Join-Path $stage 'ListopadShellHost.exe') $shellExt -Force
-foreach ($required in 'ListopadShell.dll', 'ListopadShellHost.exe') {
-  if (-not (Test-Path (Join-Path $shellExt $required))) {
-    throw "External content directory is missing $required"
-  }
-}
-if (Test-Path (Join-Path $shellExt 'ListopadPP.exe')) {
-  throw 'The editor does not belong in the package external content directory.'
+  Write-Warning 'Application binaries are unsigned. Release UAC saving will remain disabled.'
 }
 
 $licenseDirectory = Join-Path $stage 'licenses'
@@ -192,15 +173,24 @@ if ($wix) {
     [Text.ASCIIEncoding]::new())
 
   $msi = Join-Path $out "ListopadPP-$Version-win-x64.msi"
-  $registerSparse = if ($PfxPath -or $SignCommand) { '1' } else { '0' }
+  if (Test-Path -LiteralPath $msi) {
+    try {
+      Remove-Item -LiteralPath $msi -Force
+    } catch {
+      throw "Existing MSI is in use and cannot be replaced: $msi"
+    }
+  }
+  $wixPdb = [IO.Path]::ChangeExtension($msi, '.wixpdb')
+  if (Test-Path -LiteralPath $wixPdb) { Remove-Item -LiteralPath $wixPdb -Force }
+  $productCode = Get-ProductCode $Version
   & $wix.Source build (Join-Path $repo 'packaging\wix\Package.wxs') -arch x64 `
     -ext WixToolset.UI.wixext -culture ru-ru `
-    -d "StageDir=$stage" -d "ProductVersion=$Version" -d "RegisterSparse=$registerSparse" `
+    -d "StageDir=$stage" -d "ProductVersion=$Version" -d "ProductCode=$productCode" `
     -d "LicenseRtf=$licenseRtf" -o $msi
   if ($LASTEXITCODE) { throw 'WiX MSI build failed.' }
-  if ($PfxPath -or $SignCommand) { Invoke-Signer $msi }
+  Write-Host "MSI ProductCode: $productCode"
 } else {
-  Write-Warning 'WiX v5 was not found; portable ZIP and sparse identity package were created, MSI was skipped.'
+  Write-Warning 'WiX v5 was not found; the portable ZIP was created, MSI was skipped.'
 }
 
 Write-Host "Artifacts are available in $out"

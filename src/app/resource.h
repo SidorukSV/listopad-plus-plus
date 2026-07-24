@@ -1,6 +1,7 @@
 #pragma once
 
 #define IDI_LISTOPAD 101
+#define IDS_CONTEXT_MENU_OPEN 102
 #define IDR_PHOSPHOR_FONT 201
 
 #define IDM_FILE_NEW 1001
