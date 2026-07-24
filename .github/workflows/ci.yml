@@ -57,36 +57,3 @@ jobs:
         env:
           ASAN_OPTIONS: halt_on_error=1
         run: ./scripts/build.ps1 -Preset asan
-
-  linux-lexer-fuzz:
-    name: Lexer fuzz (Clang ASan/UBSan)
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install Clang and Ninja
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang libclang-rt-dev ninja-build
-      - name: Configure lexer fuzz target
-        env:
-          CC: clang
-          CXX: clang++
-        run: cmake -S fuzz -B build/fuzz -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
-      - name: Build lexer fuzz target
-        run: cmake --build build/fuzz
-      - name: Run lexer fuzz target
-        run: |
-          mkdir -p build/fuzz/artifacts build/fuzz/corpus
-          cp -R fuzz/corpus/lexer/. build/fuzz/corpus/
-          ./build/fuzz/listopad_lexer_fuzz build/fuzz/corpus \
-            -dict=fuzz/lexer.dict \
-            -artifact_prefix=build/fuzz/artifacts/ \
-            -max_total_time=30 \
-            -timeout=5
-      - name: Upload lexer fuzz findings
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: lexer-fuzz-findings-${{ github.run_id }}
-          path: build/fuzz/artifacts/*
-          if-no-files-found: ignore

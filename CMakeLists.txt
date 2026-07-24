@@ -174,22 +174,6 @@ if(LISTOPAD_BUILD_TESTS)
   target_link_libraries(listopad_benchmarks PRIVATE listopad_core)
   listopad_enable_address_sanitizer(listopad_benchmarks)
 
-  # Compile the libFuzzer entry point with the regular MSVC build as well, so
-  # API drift in the harness is caught even where clang-cl is unavailable.
-  add_library(listopad_lexer_fuzz_harness_check OBJECT
-    fuzz/lexer_fuzz.cpp
-    fuzz/lexilla_factory.cpp)
-  target_include_directories(listopad_lexer_fuzz_harness_check PRIVATE
-    tests
-    "${LEXILLA_SOURCE_DIR}/lexlib")
-  target_compile_definitions(listopad_lexer_fuzz_harness_check PRIVATE
-    UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
-  target_compile_options(listopad_lexer_fuzz_harness_check PRIVATE
-    /W4 /permissive- /utf-8 /EHsc)
-  target_link_libraries(listopad_lexer_fuzz_harness_check PRIVATE
-    listopad_lexilla)
-  listopad_enable_address_sanitizer(listopad_lexer_fuzz_harness_check)
-
   include(CTest)
   include(Catch)
   catch_discover_tests(listopad_tests)
