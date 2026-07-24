@@ -134,6 +134,11 @@ LRESULT sci(HWND editor, UINT message, WPARAM wparam = 0, LPARAM lparam = 0) {
   return SendMessageW(editor, message, wparam, lparam);
 }
 
+bool has_visible_style(const HWND window) {
+  return window &&
+         (GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE) != 0;
+}
+
 std::string control_text_utf8(HWND control) {
   const int length = GetWindowTextLengthW(control);
   std::wstring text(static_cast<std::size_t>(length), L'\0');
@@ -619,7 +624,7 @@ void EditorWindow::create_toolbar() {
 }
 
 int EditorWindow::toolbar_height() const {
-  if (!toolbar_ || !IsWindowVisible(toolbar_)) return 0;
+  if (!has_visible_style(toolbar_)) return 0;
   SIZE size{};
   if (SendMessageW(toolbar_, TB_GETMAXSIZE, 0, reinterpret_cast<LPARAM>(&size)) &&
       size.cy > 0)
@@ -1013,11 +1018,14 @@ void EditorWindow::update_layout() {
   RECT client{}; GetClientRect(window_, &client);
   RECT status_rect{}; GetWindowRect(status_, &status_rect);
   const int status_height = status_rect.bottom - status_rect.top;
-  const bool banner_visible = IsWindowVisible(banner_) != FALSE;
-  const bool search_visible = IsWindowVisible(search_panel_) != FALSE;
-  const bool replace_visible = IsWindowVisible(replace_text_) != FALSE;
-  const bool search_results_visible =
-      IsWindowVisible(search_results_) != FALSE;
+  // show_search() temporarily disables redraw on the parent to make mode
+  // changes atomic. IsWindowVisible() then reports every child as hidden even
+  // when its own WS_VISIBLE state is set, collapsing the toolbar and skipping
+  // the new search layout. Read each control's requested visibility directly.
+  const bool banner_visible = has_visible_style(banner_);
+  const bool search_visible = has_visible_style(search_panel_);
+  const bool replace_visible = has_visible_style(replace_text_);
+  const bool search_results_visible = has_visible_style(search_results_);
   const int banner_height = banner_visible ? 36 : 0;
   const int bar_height = toolbar_height();
   const int top_offset = bar_height + banner_height;
@@ -1059,7 +1067,7 @@ void EditorWindow::update_layout() {
   if (Tab* tab = active_tab(); tab && tab->view) {
     SetWindowPos(tab->view, HWND_TOP, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    if (tab->map && IsWindowVisible(tab->map)) {
+    if (has_visible_style(tab->map)) {
       SetWindowPos(tab->map, HWND_TOP, 0, 0, 0, 0,
                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
