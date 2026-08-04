@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.29)
-set(LISTOPAD_VERSION "0.1.6" CACHE STRING "Listopad++ semantic version")
+set(LISTOPAD_VERSION "0.2.1" CACHE STRING "Listopad++ semantic version")
 project(ListopadPP VERSION "${LISTOPAD_VERSION}" LANGUAGES C CXX RC)
+
+# Listopad++ does not use C++ modules. With MSVC/Ninja, the module-scanned
+# rules omitted ordinary header depfiles and could retain stale ABI consumers.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "Listopad++ v1 supports Windows x64 only")
@@ -12,6 +16,19 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# The localized MSVC /showIncludes prefix is mis-decoded by this CMake/Ninja
+# toolchain, so Ninja records zero implicit header dependencies. Keep explicit
+# first-party header dependencies: this is intentionally coarse-grained, but it
+# prevents stale object layouts and the project is small enough for the rebuild.
+file(GLOB_RECURSE LISTOPAD_PROJECT_HEADERS CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
+file(GLOB_RECURSE LISTOPAD_PROJECT_SOURCES CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
+set_property(SOURCE ${LISTOPAD_PROJECT_SOURCES} APPEND PROPERTY
+  OBJECT_DEPENDS "${LISTOPAD_PROJECT_HEADERS}")
 
 function(listopad_enable_address_sanitizer target)
   if(NOT LISTOPAD_ENABLE_ASAN)
@@ -52,11 +69,16 @@ configure_file(src/common/icon.rc.in
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/ListopadIcon.rc"
   PROPERTIES OBJECT_DEPENDS "${LISTOPAD_ICON_FILE}")
 
-# The resource scripts pull the version through a generated header, and the
-# generator does not scan .rc includes. Without this a version bump reconfigures
-# and relinks but leaves the old VERSIONINFO in place, so the binaries ship
-# claiming whatever version was built first.
+# Resource scripts and the current Ninja/MSVC configuration do not reliably
+# report dependencies on the generated version header. Keep the direct C++ and
+# .rc consumers explicit so an incremental version bump cannot leave either the
+# About dialog or VERSIONINFO at the previous version.
 set(LISTOPAD_VERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/listopad/version.h")
+set_source_files_properties(
+  src/app/command_controller.cpp
+  src/app/document_view_controller.cpp
+  src/app/editor_window.cpp
+  PROPERTIES OBJECT_DEPENDS "${LISTOPAD_VERSION_HEADER}")
 set_source_files_properties(
   src/app/resources.rc
   PROPERTIES OBJECT_DEPENDS
@@ -77,10 +99,12 @@ add_library(listopad_core STATIC
   src/core/ipc_protocol.cpp
   src/core/language.cpp
   src/core/search.cpp
+  src/core/session.cpp
   src/core/settings.cpp
   src/core/shell_registration.cpp
   src/core/signature.cpp
   src/core/strings.cpp
+  src/core/technology_log.cpp
   src/core/ui_layout.cpp)
 target_include_directories(listopad_core PUBLIC
   "${CMAKE_CURRENT_BINARY_DIR}/generated" include PRIVATE assets)
@@ -106,9 +130,14 @@ add_executable(ListopadPP WIN32
   src/app/file_watcher.cpp
   src/app/hex_view_window.cpp
   src/app/large_file_view.cpp
+  src/app/recovery_controller.cpp
+  src/app/recovery_dialog.cpp
   src/app/search_controller.cpp
+  src/app/settings_dialog.cpp
   src/app/single_instance.cpp
   src/app/tab_controller.cpp
+  src/app/technology_log_controller.cpp
+  src/app/technology_log_view.cpp
   src/app/window_layout_controller.cpp
   src/app/resources.rc
   "${CMAKE_CURRENT_BINARY_DIR}/ListopadIcon.rc"
@@ -142,6 +171,7 @@ if(LISTOPAD_BUILD_TESTS)
   enable_testing()
   find_package(Catch2 3 CONFIG REQUIRED)
   add_executable(listopad_tests
+    src/app/recovery_controller.cpp
     src/app/tab_controller.cpp
     tests/command_line_tests.cpp
     tests/document_map_cache_tests.cpp
@@ -156,8 +186,12 @@ if(LISTOPAD_BUILD_TESTS)
     tests/ipc_tests.cpp
     tests/language_tests.cpp
     tests/lexer_tests.cpp
+    tests/recovery_controller_tests.cpp
     tests/search_tests.cpp
+    tests/session_tests.cpp
+    tests/settings_tests.cpp
     tests/tab_controller_tests.cpp
+    tests/technology_log_tests.cpp
     tests/ui_layout_tests.cpp)
   target_compile_definitions(listopad_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
   target_include_directories(listopad_tests PRIVATE src/app)

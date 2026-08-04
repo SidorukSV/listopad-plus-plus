@@ -3,7 +3,9 @@
 #include "document_map.h"
 #include "hex_view_window.h"
 #include "large_file_view.h"
+#include "recovery_dialog.h"
 #include "resource.h"
+#include "technology_log_view.h"
 #include "listopad/encoding.h"
 #include "listopad/file_io.h"
 #include "listopad/formatter.h"
@@ -12,11 +14,13 @@
 #include "listopad/search.h"
 #include "listopad/shell_registration.h"
 #include "listopad/strings.h"
+#include "listopad/technology_log.h"
 #include "listopad/version.h"
 
 #include <windowsx.h>
 #include <commdlg.h>
 #include <dwmapi.h>
+#include <shellapi.h>
 #include <shobjidl.h>
 #include <uxtheme.h>
 
@@ -27,12 +31,17 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cctype>
 #include <cstring>
 #include <cwctype>
+#include <iomanip>
+#include <iterator>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -43,6 +52,7 @@ namespace {
 
 constexpr wchar_t kWindowClass[] = L"ListopadPPMainWindow";
 constexpr UINT kLanguageFirst = 3000;
+constexpr UINT_PTR kRecoveryTimer = 1;
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 constexpr int kMinWindowWidth = 480;
 constexpr int kMinWindowHeight = 320;
@@ -158,10 +168,73 @@ std::wstring eol_name(const EolMode mode) {
   }
 }
 
+std::string new_session_id() {
+  GUID guid{};
+  if (FAILED(CoCreateGuid(&guid))) {
+    const std::string seed =
+        std::to_string(GetTickCount64()) + ":" +
+        std::to_string(GetCurrentProcessId()) + ":" +
+        std::to_string(reinterpret_cast<std::uintptr_t>(&guid));
+    const auto digest = sha256(std::as_bytes(std::span(seed)));
+    return hex_encode(std::span(digest).first<16>());
+  }
+  return hex_encode(std::as_bytes(std::span(&guid, 1)));
+}
+
+StoredViewKind stored_view_kind(const DocumentViewKind kind) {
+  switch (kind) {
+    case DocumentViewKind::LargeText: return StoredViewKind::LargeText;
+    case DocumentViewKind::Hex: return StoredViewKind::Hex;
+    default: return StoredViewKind::Text;
+  }
+}
+
+DocumentViewKind document_view_kind(const StoredViewKind kind) {
+  switch (kind) {
+    case StoredViewKind::LargeText: return DocumentViewKind::LargeText;
+    case StoredViewKind::Hex: return DocumentViewKind::Hex;
+    default: return DocumentViewKind::Text;
+  }
+}
+
+bool same_path(const std::filesystem::path& left,
+               const std::filesystem::path& right) {
+  return lowercase(left.wstring()) == lowercase(right.wstring());
+}
+
+std::filesystem::path current_module_path() {
+  std::wstring path(32768, L'\0');
+  const DWORD length =
+      GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+  if (length == 0 || length >= path.size()) return {};
+  path.resize(length);
+  return path;
+}
+
+bool process_is_elevated() {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+    return false;
+  }
+  TOKEN_ELEVATION elevation{};
+  DWORD received = 0;
+  const bool elevated =
+      GetTokenInformation(token, TokenElevation, &elevation,
+                          sizeof(elevation), &received) != FALSE &&
+      elevation.TokenIsElevated != 0;
+  CloseHandle(token);
+  return elevated;
+}
+
 }  // namespace
 
-EditorWindow::EditorWindow(HINSTANCE instance, Settings settings)
-    : instance_(instance), settings_(std::move(settings)),
+EditorWindow::EditorWindow(HINSTANCE instance, Settings settings,
+                           const bool restoring_elevated_restart)
+    : instance_(instance),
+      settings_(std::move(settings)),
+      session_store_(profile_directory()),
+      recovery_controller_(SessionStore(profile_directory()), false),
+      restoring_elevated_restart_(restoring_elevated_restart),
       watcher_([this](const std::filesystem::path& path) {
         auto* copy = new std::filesystem::path(path);
         if (!window_ || !PostMessageW(window_, kExternalChangeMessage, 0, reinterpret_cast<LPARAM>(copy))) delete copy;
@@ -233,6 +306,7 @@ bool EditorWindow::create(const int show_command) {
   Scintilla_RegisterClasses(instance_);
   LargeFileView::register_class(instance_);
   HexViewWindow::register_class(instance_);
+  TechnologyLogView::register_class(instance_);
 
   WNDCLASSEXW type{sizeof(type)};
   type.hInstance = instance_; type.lpfnWndProc = window_proc; type.lpszClassName = kWindowClass;
@@ -504,20 +578,46 @@ LRESULT EditorWindow::dispatch(const UINT message, const WPARAM wparam, const LP
       SetTextColor(reinterpret_cast<HDC>(wparam), dark_ ? RGB(238, 238, 238) : GetSysColor(COLOR_WINDOWTEXT));
       SetBkColor(reinterpret_cast<HDC>(wparam), dark_ ? RGB(30, 30, 30) : GetSysColor(COLOR_WINDOW));
       return reinterpret_cast<LRESULT>(field_brush_);
+    case WM_TIMER:
+      if (wparam == kRecoveryTimer) on_recovery_timer();
+      return 0;
     case WM_THEMECHANGED:
       RedrawWindow(window_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
       return 0;
     case WM_CLOSE:
+      if (restarting_elevated_) {
+        persist_window_bounds();
+        DestroyWindow(window_);
+        return 0;
+      }
       for (int index = static_cast<int>(tab_controller_.size()) - 1; index >= 0; --index) if (!confirm_close(tab_controller_[index])) return 0;
+      prepare_clean_shutdown();
       persist_window_bounds();
       DestroyWindow(window_); return 0;
+    case WM_QUERYENDSESSION:
+      ending_windows_session_ = true;
+      capture_recovery_now();
+      queue_manifest(false);
+      recovery_controller_.flush();
+      return TRUE;
     case WM_ENDSESSION:
       // Windows is shutting down or the user is logging off, so WM_CLOSE may
       // never arrive — capture the geometry here too. wparam is TRUE only when
       // the session is actually ending (a cancelled shutdown sends FALSE).
-      if (wparam) persist_window_bounds();
+      if (wparam) {
+        capture_recovery_now();
+        queue_manifest(false);
+        recovery_controller_.flush();
+        persist_window_bounds();
+      } else {
+        ending_windows_session_ = false;
+      }
       return 0;
-    case WM_DESTROY: PostQuitMessage(0); return 0;
+    case WM_DESTROY:
+      KillTimer(window_, kRecoveryTimer);
+      UnregisterApplicationRestart();
+      PostQuitMessage(0);
+      return 0;
     default: return DefWindowProcW(window_, message, wparam, lparam);
   }
 }
@@ -527,7 +627,6 @@ bool EditorWindow::on_create() {
     ChangeWindowMessageFilterEx(
         window_, kGuiSmokeCommandMessage, MSGFLT_ALLOW, nullptr);
   }
-  rebuild_menu();
   tabs_ = CreateWindowExW(0, WC_TABCONTROLW, L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
                           0, 0, 0, 0, window_, reinterpret_cast<HMENU>(IDC_TAB), instance_, nullptr);
   status_ = CreateWindowExW(0, STATUSCLASSNAMEW, L"", WS_CHILD | WS_VISIBLE,
@@ -602,10 +701,12 @@ bool EditorWindow::on_create() {
       .replace_all_button = replace_all_button_,
       .search_results = search_results_,
   });
-  // Tabs shrink to their label (capped in fit_tab_title) instead of filling a
-  // fixed minimum, with a little breathing room top and bottom.
+  // The native control sizes each tab from its text and this padding. Reserve
+  // enough horizontal space for our owner-drawn close button as well as the
+  // label; otherwise even a short name such as "Module.bsl *" is clipped.
   SendMessageW(tabs_, TCM_SETPADDING, 0,
-               MAKELPARAM(MulDiv(20, logical_dpi, 96), MulDiv(7, logical_dpi, 96)));
+               MAKELPARAM(MulDiv(34, logical_dpi, 96),
+                          MulDiv(7, logical_dpi, 96)));
   SendMessageW(tabs_, TCM_SETMINTABWIDTH, 0, MulDiv(70, logical_dpi, 96));
   // A proportional UI font for the tab strip reads better than the default
   // fixed shell font; the tab control uses it to size and lay out each tab.
@@ -619,7 +720,12 @@ bool EditorWindow::on_create() {
                              OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                              FIXED_PITCH | FF_MODERN, utf8_to_wide(settings_.font_face).c_str());
   apply_window_theme();
-  add_empty_tab(); update_layout(); return true;
+  if (!initialize_session()) return false;
+  if (tab_controller_.empty()) add_empty_tab();
+  recovery_controller_.start();
+  SetTimer(window_, kRecoveryTimer, 1000, nullptr);
+  update_layout();
+  return true;
 }
 
 void EditorWindow::load_icon_font() {
@@ -802,23 +908,51 @@ std::wstring EditorWindow::fit_tab_title(std::wstring title) const {
   HDC dc = GetDC(tabs_);
   if (!dc) return title;
   const HGDIOBJ previous = SelectObject(dc, tab_font_);
-  const int max_px = MulDiv(220, dpi_, 96);  // 260 cap minus the tab's horizontal padding
+  // Together with TCM_SETPADDING this keeps a tab near a 260 logical-pixel cap.
+  // Compact in the middle so the extension and state markers (" *", " !")
+  // remain visible instead of disappearing behind an end ellipsis.
+  const int max_px = MulDiv(190, dpi_, 96);
   SIZE size{};
-  GetTextExtentPoint32W(dc, title.c_str(), static_cast<int>(title.size()), &size);
-  if (size.cx > max_px && title.size() > 1) {
-    const std::wstring ellipsis = L"…";
-    int low = 0;
-    int high = static_cast<int>(title.size());
-    while (low < high) {
-      const int mid = (low + high + 1) / 2;
-      const std::wstring candidate = title.substr(0, mid) + ellipsis;
-      GetTextExtentPoint32W(dc, candidate.c_str(), static_cast<int>(candidate.size()), &size);
-      if (size.cx <= max_px)
-        low = mid;
-      else
-        high = mid - 1;
+  const auto fits = [&](const std::wstring& candidate) {
+    GetTextExtentPoint32W(dc, candidate.c_str(),
+                          static_cast<int>(candidate.size()), &size);
+    return size.cx <= max_px;
+  };
+  if (!fits(title) && title.size() > 1) {
+    std::size_t state_start = title.size();
+    while (state_start >= 2) {
+      const std::wstring_view marker(title.data() + state_start - 2, 2);
+      if (marker != L" *" && marker != L" !") break;
+      state_start -= 2;
     }
-    title = title.substr(0, low) + ellipsis;
+    const std::wstring base = title.substr(0, state_start);
+    const std::wstring state = title.substr(state_start);
+    const std::size_t extension = base.find_last_of(L'.');
+    std::size_t tail_start = 0;
+    if (extension != std::wstring::npos && extension > 0) {
+      tail_start = extension > 8 ? extension - 8 : 0;
+    } else if (base.size() > 16) {
+      tail_start = base.size() - 16;
+    }
+    std::size_t prefix_count = (std::min)(std::size_t{16}, tail_start);
+    if (prefix_count >= tail_start && tail_start < base.size()) {
+      prefix_count = tail_start > 0 ? tail_start - 1 : 0;
+    }
+    std::wstring candidate;
+    for (;;) {
+      candidate = base.substr(0, prefix_count) + L"…" +
+                  base.substr(tail_start) + state;
+      if (fits(candidate)) break;
+      if (prefix_count > 4) {
+        --prefix_count;
+      } else if (tail_start < base.size()) {
+        ++tail_start;
+      } else {
+        candidate = L"…" + state;
+        break;
+      }
+    }
+    title = std::move(candidate);
   }
   SelectObject(dc, previous);
   ReleaseDC(tabs_, dc);
@@ -870,8 +1004,11 @@ void EditorWindow::apply_window_theme() {
       case ViewKind::Hex:
         HexViewWindow::set_dark(tab.view, dark_);
         break;
+      case ViewKind::TechnologyLog:
+        TechnologyLogView::set_dark(tab.view, dark_);
+        break;
       case ViewKind::Text:
-        configure_editor(tab.view, tab.document);
+        configure_editor(tab);
         if (tab.map)
           DocumentMap::restyle(tab.map, tab.view, settings_.font_face, dark_);
         break;
@@ -890,12 +1027,39 @@ void EditorWindow::apply_window_theme() {
 }
 
 void EditorWindow::rebuild_menu() {
+  HMENU previous = window_ ? GetMenu(window_) : nullptr;
+  if (previous) {
+    SetMenu(window_, nullptr);
+    // Destroy owner-drawn menu items while their MenuVisual pointers are still
+    // alive. prepare_menu_bar() replaces menu_visuals_ for the new menu.
+    DestroyMenu(previous);
+  }
   HMENU root = CreateMenu();
   HMENU file = CreatePopupMenu();
   AppendMenuW(file, MF_STRING, IDM_FILE_NEW, tr(L"&Новый\tCtrl+N", L"&New\tCtrl+N"));
   AppendMenuW(file, MF_STRING, IDM_FILE_OPEN, tr(L"&Открыть…\tCtrl+O", L"&Open…\tCtrl+O"));
   AppendMenuW(file, MF_STRING, IDM_FILE_SAVE, tr(L"&Сохранить\tCtrl+S", L"&Save\tCtrl+S"));
   AppendMenuW(file, MF_STRING, IDM_FILE_SAVE_AS, tr(L"Сохранить &как…", L"Save &as…"));
+  AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
+  HMENU recent = CreatePopupMenu();
+  for (std::size_t index = 0;
+       index < recent_files_.size() && index < 20; ++index) {
+    std::wstring label = L"&" + std::to_wstring(index + 1) + L" " +
+                         recent_files_[index].wstring();
+    AppendMenuW(recent, MF_STRING,
+                IDM_FILE_RECENT_FIRST + static_cast<UINT>(index),
+                label.c_str());
+  }
+  if (!recent_files_.empty()) AppendMenuW(recent, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(recent, MF_STRING | (recent_files_.empty() ? MF_GRAYED : 0),
+              IDM_FILE_CLEAR_RECENT,
+              tr(L"Очистить список", L"Clear list"));
+  AppendMenuW(file, MF_POPUP, reinterpret_cast<UINT_PTR>(recent),
+              tr(L"Недавние файлы", L"Recent files"));
+  AppendMenuW(file, MF_STRING | (closed_files_.empty() ? MF_GRAYED : 0),
+              IDM_FILE_REOPEN_CLOSED,
+              tr(L"Открыть закрытую вкладку\tCtrl+Shift+T",
+                 L"Reopen closed tab\tCtrl+Shift+T"));
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, IDM_FILE_CLOSE, tr(L"&Закрыть вкладку\tCtrl+W", L"&Close tab\tCtrl+W"));
   AppendMenuW(file, MF_STRING, IDM_FILE_EXIT, tr(L"В&ыход", L"E&xit"));
@@ -994,12 +1158,17 @@ void EditorWindow::rebuild_menu() {
   HMENU view = CreatePopupMenu();
   AppendMenuW(view, MF_STRING, IDM_VIEW_DOCUMENT_MAP,
               tr(L"Карта документа", L"Document map"));
+  AppendMenuW(view, MF_STRING, IDM_VIEW_TECHNOLOGY_LOG,
+              tr(L"Технологический журнал", L"Technology log"));
   AppendMenuW(view, MF_STRING, IDM_VIEW_HEX, L"Hex/ASCII");
   AppendMenuW(root, MF_POPUP, reinterpret_cast<UINT_PTR>(view),
               tr(L"&Вид", L"&View"));
 
   HMENU tools = CreatePopupMenu();
   AppendMenuW(tools, MF_STRING, IDM_TOOLS_FORMAT, tr(L"Форматировать\tAlt+Shift+F", L"Format\tAlt+Shift+F"));
+  AppendMenuW(tools, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(tools, MF_STRING, IDM_TOOLS_SETTINGS,
+              tr(L"Настройки…", L"Settings…"));
   AppendMenuW(tools, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(tools, MF_STRING, IDM_TOOLS_REGISTER, tr(L"Добавить классическое ПКМ", L"Register classic context menu"));
   AppendMenuW(tools, MF_STRING, IDM_TOOLS_UNREGISTER, tr(L"Удалить классическое ПКМ", L"Unregister classic context menu"));
@@ -1039,15 +1208,27 @@ void EditorWindow::refresh_view_menu_state() {
   set_checked(IDM_VIEW_DOCUMENT_MAP, settings_.show_document_map);
   const Tab* tab = active_tab();
   set_checked(IDM_VIEW_HEX, tab && tab->view_kind == ViewKind::Hex);
+  set_checked(IDM_VIEW_TECHNOLOGY_LOG,
+              tab && tab->view_kind == ViewKind::TechnologyLog);
   const bool can_switch =
       tab && tab->document.has_path() && !tab->document.dirty &&
       !tab->document.external_diverged;
   set_enabled(IDM_VIEW_HEX, can_switch);
+  set_enabled(IDM_VIEW_TECHNOLOGY_LOG,
+              can_switch && tab->technology_log_candidate);
   if (changed) DrawMenuBar(window_);
 }
 
 void EditorWindow::prepare_menu_bar(HMENU menu) {
   menu_visuals_.clear();
+  // rebuild_menu() runs after startup and whenever recent-file state changes,
+  // so every freshly created menu must receive the current theme background.
+  // Owner-drawn items cover only their own rectangles; without this brush the
+  // unused remainder of a dark menu bar stays system white.
+  MENUINFO menu_info{sizeof(menu_info)};
+  menu_info.fMask = MIM_BACKGROUND;
+  menu_info.hbrBack = panel_brush_;
+  SetMenuInfo(menu, &menu_info);
   const int count = GetMenuItemCount(menu);
   menu_visuals_.reserve(static_cast<std::size_t>((std::max)(count, 0)));
   for (int index = 0; index < count; ++index) {
@@ -1305,6 +1486,7 @@ int EditorWindow::active_index() const {
 
 void EditorWindow::activate_tab(const int index) {
   if (!tab_controller_.activate(index)) return;
+  manifest_dirty_ = true;
   TabCtrl_SetCurSel(tabs_, index);
   for (int i = 0; i < static_cast<int>(tab_controller_.size()); ++i) {
     ShowWindow(tab_controller_[i].view, i == index ? SW_SHOW : SW_HIDE);
@@ -1340,23 +1522,669 @@ bool EditorWindow::create_tab_views(Tab& tab) {
 }
 
 bool EditorWindow::switch_tab_view(Tab& tab, const ViewKind requested) {
-  return view_controller_.switch_to(*this, tab, requested);
+  const bool switched = view_controller_.switch_to(*this, tab, requested);
+  if (switched) manifest_dirty_ = true;
+  return switched;
 }
 
 void EditorWindow::add_empty_tab() {
   Tab tab;
+  initialize_tab_identity(tab);
   tab.document.title = tr(L"Без имени", L"Untitled");
   tab_controller_.push_back(std::move(tab));
   if (!create_tab_views(tab_controller_.back())) {
+    const DWORD error = GetLastError();
     tab_controller_.pop_back();
+    if (error != ERROR_SUCCESS) {
+      const std::wstring message =
+          tr(L"Не удалось создать редактор:\n",
+             L"Unable to create the editor:\n") +
+          win32_error_message(error);
+      MessageBoxW(window_, message.c_str(), LISTOPAD_PRODUCT_NAME,
+                  MB_OK | MB_ICONERROR);
+    }
     return;
   }
   TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = tab_controller_.back().document.title.data();
   TabCtrl_InsertItem(tabs_, static_cast<int>(tab_controller_.size() - 1), &item);
+  manifest_dirty_ = true;
   activate_tab(static_cast<int>(tab_controller_.size() - 1));
 }
 
-void EditorWindow::configure_editor(HWND editor, const Document& document) {
+void EditorWindow::initialize_tab_identity(Tab& tab) {
+  if (!valid_session_id(tab.id)) tab.id = new_session_id();
+}
+
+bool EditorWindow::initialize_session() {
+  const auto retention = std::chrono::hours(
+      24 * settings_.recovery_retention_days);
+  const auto retention_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(retention).count();
+  const std::uint64_t now = unix_time_milliseconds();
+  (void)session_store_.remove_expired_recovery(
+      now > static_cast<std::uint64_t>(retention_ms)
+          ? now - static_cast<std::uint64_t>(retention_ms)
+          : 0);
+
+  const auto loaded_manifest = session_store_.load_manifest();
+  if (loaded_manifest.status == StoreLoadStatus::Loaded) {
+    recent_files_ = loaded_manifest.value.recent_files;
+    closed_files_ = loaded_manifest.value.closed_files;
+  }
+
+  const std::vector<RecoverySnapshot> snapshots =
+      session_store_.load_recovery_snapshots();
+  if (portable_mode() && settings_.recovery_enabled) {
+    MessageBoxW(
+        window_,
+        tr(L"Переносной режим хранит recovery как открытый текст рядом "
+           L"с программой.",
+           L"Portable mode stores recovery as plaintext next to the "
+           L"application."),
+        LISTOPAD_PRODUCT_NAME, MB_OK | MB_ICONWARNING);
+  }
+  const bool previous_unclean =
+      loaded_manifest.status == StoreLoadStatus::Loaded &&
+      !loaded_manifest.value.clean_shutdown;
+  if (restoring_elevated_restart_) {
+    if (loaded_manifest.status == StoreLoadStatus::Loaded) {
+      restore_elevated_restart(loaded_manifest.value, snapshots);
+    }
+  } else if (settings_.recovery_enabled && previous_unclean &&
+             !snapshots.empty()) {
+    const RecoveryChoice choice = RecoveryDialog::show(
+        window_, instance_, snapshots, russian());
+    if (choice.action == RecoveryAction::ExitPreserve) return false;
+    if (choice.action == RecoveryAction::RestoreSelected) {
+      std::unordered_set<std::string> selected(
+          choice.selected_ids.begin(), choice.selected_ids.end());
+      std::vector<RecoverySnapshot> chosen;
+      for (const auto& snapshot : snapshots) {
+        if (selected.contains(snapshot.id)) chosen.push_back(snapshot);
+      }
+      restore_recovery(chosen);
+      if (loaded_manifest.status == StoreLoadStatus::Loaded) {
+        std::unordered_map<std::string, const SessionTab*> by_id;
+        for (const auto& stored : loaded_manifest.value.tabs) {
+          by_id.emplace(stored.id, &stored);
+        }
+        for (Tab& tab : tab_controller_) {
+          if (const auto found = by_id.find(tab.id); found != by_id.end()) {
+            apply_stored_view_state(tab, *found->second);
+          }
+        }
+      }
+    } else if (choice.action == RecoveryAction::DeleteAll) {
+      (void)session_store_.clear_recovery();
+    }
+  } else if (loaded_manifest.status == StoreLoadStatus::Loaded &&
+             loaded_manifest.value.clean_shutdown &&
+             settings_.restore_session) {
+    restore_manifest(loaded_manifest.value);
+  }
+
+  session_initialized_ = true;
+  rebuild_menu();
+  (void)session_store_.save_manifest(capture_manifest(false));
+  manifest_dirty_ = false;
+  RegisterApplicationRestart(L"", RESTART_NO_PATCH | RESTART_NO_REBOOT);
+  return true;
+}
+
+void EditorWindow::restore_manifest(const SessionManifest& manifest) {
+  int missing = 0;
+  int restored_active = -1;
+  for (std::size_t index = 0; index < manifest.tabs.size(); ++index) {
+    const std::size_t before = tab_controller_.size();
+    if (!restore_session_tab(manifest.tabs[index])) {
+      ++missing;
+      continue;
+    }
+    if (static_cast<int>(index) == manifest.active_index) {
+      restored_active = static_cast<int>(before);
+    }
+  }
+  if (restored_active >= 0) activate_tab(restored_active);
+  if (missing > 0) {
+    const std::wstring message =
+        tr(L"Не удалось восстановить вкладки: ",
+           L"Tabs that could not be restored: ") +
+        std::to_wstring(missing);
+    MessageBoxW(window_, message.c_str(), LISTOPAD_PRODUCT_NAME,
+                MB_OK | MB_ICONINFORMATION);
+  }
+}
+
+bool EditorWindow::restore_session_tab(const SessionTab& stored) {
+  if (stored.path.empty()) {
+    add_empty_tab();
+    Tab* tab = active_tab();
+    if (!tab) return false;
+    tab->id = valid_session_id(stored.id) ? stored.id : new_session_id();
+    tab->document.title =
+        stored.title.empty() ? tr(L"Без имени", L"Untitled") : stored.title;
+    tab->document.encoding = stored.encoding;
+    tab->document.eol = stored.eol;
+    tab->document.language = stored.language;
+    apply_stored_view_state(*tab, stored);
+    return true;
+  }
+
+  std::error_code error;
+  if (!std::filesystem::exists(stored.path, error)) return false;
+  if (!open_file(stored.path, &stored.encoding)) return false;
+  Tab* tab = active_tab();
+  if (!tab || !same_path(tab->document.path, stored.path)) return false;
+  tab->id = valid_session_id(stored.id) ? stored.id : new_session_id();
+  apply_language(*tab, stored.language);
+  tab->document.external_diverged = stored.external_diverged;
+  tab->external_notice_pending = stored.external_diverged;
+  if (stored.view == StoredViewKind::Hex &&
+      tab->view_kind != ViewKind::Hex &&
+      !tab->document.dirty && !tab->document.external_diverged) {
+    switch_tab_view(*tab, ViewKind::Hex);
+  }
+  apply_stored_view_state(*tab, stored);
+  return true;
+}
+
+void EditorWindow::restore_recovery(
+    const std::vector<RecoverySnapshot>& snapshots) {
+  for (const auto& snapshot : snapshots) {
+    restore_recovery_tab(snapshot);
+  }
+}
+
+void EditorWindow::restore_elevated_restart(
+    const SessionManifest& manifest,
+    const std::vector<RecoverySnapshot>& snapshots) {
+  std::unordered_map<std::string, const RecoverySnapshot*> recovery_by_id;
+  for (const auto& snapshot : snapshots) {
+    recovery_by_id.emplace(snapshot.id, &snapshot);
+  }
+
+  int restored_active = -1;
+  std::unordered_set<std::string> restored_recovery_ids;
+  for (std::size_t index = 0; index < manifest.tabs.size(); ++index) {
+    const SessionTab& stored = manifest.tabs[index];
+    const std::size_t before = tab_controller_.size();
+    const auto recovery = recovery_by_id.find(stored.id);
+    const bool restored =
+        recovery != recovery_by_id.end()
+            ? restore_recovery_tab(*recovery->second)
+            : restore_session_tab(stored);
+    if (!restored || tab_controller_.size() == before) continue;
+
+    Tab& tab = tab_controller_.back();
+    apply_stored_view_state(tab, stored);
+    if (recovery != recovery_by_id.end()) {
+      restored_recovery_ids.insert(stored.id);
+    }
+    if (static_cast<int>(index) == manifest.active_index) {
+      restored_active = static_cast<int>(before);
+    }
+  }
+
+  if (restored_active >= 0) activate_tab(restored_active);
+  if (!settings_.recovery_enabled) {
+    for (const auto& id : restored_recovery_ids) {
+      (void)session_store_.remove_recovery(id);
+    }
+  }
+}
+
+bool EditorWindow::restore_recovery_tab(const RecoverySnapshot& snapshot) {
+  Tab tab;
+  tab.id = snapshot.id;
+  initialize_tab_identity(tab);
+  tab.view_kind = ViewKind::Text;
+  tab.document.path = snapshot.path;
+  tab.document.title = snapshot.title.empty()
+                           ? tr(L"Восстановленный документ",
+                                L"Recovered document")
+                           : snapshot.title;
+  tab.document.text = snapshot.content;
+  tab.document.encoding = snapshot.encoding;
+  tab.document.eol = snapshot.eol;
+  tab.document.language = snapshot.language;
+  tab.document.fingerprint = snapshot.source_fingerprint;
+  tab.document.dirty = true;
+  const FileFingerprint current =
+      snapshot.path.empty() ? FileFingerprint{}
+                            : fingerprint_file(snapshot.path);
+  tab.document.external_diverged =
+      snapshot.external_diverged ||
+      (!snapshot.path.empty() && current != snapshot.source_fingerprint);
+  tab.external_notice_pending = tab.document.external_diverged;
+  tab.edit_generation = 1;
+  tab.queued_recovery_generation = 1;
+  tab.first_unsaved_edit_tick = GetTickCount64();
+  tab.last_edit_tick = tab.first_unsaved_edit_tick;
+
+  tab_controller_.push_back(std::move(tab));
+  Tab& added = tab_controller_.back();
+  if (!create_tab_views(added)) {
+    tab_controller_.pop_back();
+    return false;
+  }
+  added.document.dirty = true;
+  TCITEMW item{};
+  item.mask = TCIF_TEXT;
+  item.pszText = added.document.title.data();
+  TabCtrl_InsertItem(tabs_, static_cast<int>(tab_controller_.size() - 1),
+                     &item);
+  if (added.document.has_path()) watcher_.watch(added.document.path);
+  activate_tab(static_cast<int>(tab_controller_.size() - 1));
+  return true;
+}
+
+void EditorWindow::apply_stored_view_state(Tab& tab,
+                                           const SessionTab& stored) {
+  if (tab.view_kind != ViewKind::Text || !tab.view) return;
+  sci(tab.view, SCI_SETSEL, static_cast<WPARAM>((std::max)(
+                                std::int64_t{0}, stored.anchor)),
+      static_cast<LPARAM>((std::max)(std::int64_t{0}, stored.caret)));
+  sci(tab.view, SCI_SETFIRSTVISIBLELINE,
+      static_cast<WPARAM>((std::max)(std::int64_t{0},
+                                     stored.first_visible_line)));
+  sci(tab.view, SCI_SETXOFFSET,
+      static_cast<WPARAM>((std::max)(std::int64_t{0}, stored.x_offset)));
+}
+
+SessionTab EditorWindow::capture_session_tab(const Tab& tab) const {
+  SessionTab stored;
+  stored.id = tab.id;
+  stored.path = tab.document.path;
+  stored.title = tab.document.title;
+  stored.encoding = tab.document.encoding;
+  stored.eol = tab.document.eol;
+  stored.language = tab.document.language;
+  stored.view = stored_view_kind(tab.view_kind);
+  stored.external_diverged = tab.document.external_diverged;
+  if (tab.view_kind == ViewKind::Text && tab.view) {
+    stored.caret = sci(tab.view, SCI_GETCURRENTPOS);
+    stored.anchor = sci(tab.view, SCI_GETANCHOR);
+    stored.first_visible_line = sci(tab.view, SCI_GETFIRSTVISIBLELINE);
+    stored.x_offset = sci(tab.view, SCI_GETXOFFSET);
+  }
+  return stored;
+}
+
+SessionManifest EditorWindow::capture_manifest(
+    const bool clean_shutdown) const {
+  SessionManifest manifest;
+  manifest.clean_shutdown = clean_shutdown;
+  manifest.active_index = active_index();
+  manifest.recent_files = recent_files_;
+  manifest.closed_files = closed_files_;
+  manifest.tabs.reserve(tab_controller_.size());
+  for (const Tab& tab : tab_controller_) {
+    manifest.tabs.push_back(capture_session_tab(tab));
+  }
+  return manifest;
+}
+
+void EditorWindow::queue_manifest(const bool clean_shutdown) {
+  if (!session_initialized_) return;
+  if (!clean_shutdown && !manifest_dirty_) return;
+  recovery_controller_.save_manifest(capture_manifest(clean_shutdown));
+  manifest_dirty_ = false;
+}
+
+void EditorWindow::mark_tab_edited(Tab& tab) {
+  const std::uint64_t now = GetTickCount64();
+  ++tab.edit_generation;
+  if (tab.first_unsaved_edit_tick == 0) tab.first_unsaved_edit_tick = now;
+  tab.last_edit_tick = now;
+  tab.recovery_too_large = false;
+  manifest_dirty_ = true;
+}
+
+void EditorWindow::capture_recovery_now() {
+  if (!settings_.recovery_enabled) return;
+  for (Tab& tab : tab_controller_) {
+    if (!editable(tab) || !tab.document.dirty || !tab.view) continue;
+    const auto length =
+        static_cast<std::uint64_t>(sci(tab.view, SCI_GETLENGTH));
+    if (length > settings_.recovery_max_bytes) {
+      tab.recovery_too_large = true;
+      continue;
+    }
+    RecoverySnapshot snapshot;
+    snapshot.id = tab.id;
+    snapshot.path = tab.document.path;
+    snapshot.title = tab.document.title;
+    snapshot.encoding = tab.document.encoding;
+    snapshot.eol = tab.document.eol;
+    snapshot.language = tab.document.language;
+    snapshot.source_fingerprint = tab.document.fingerprint;
+    snapshot.content = editor_text(tab.view);
+    snapshot.created_unix_ms = unix_time_milliseconds();
+    snapshot.external_diverged = tab.document.external_diverged;
+    recovery_controller_.save(std::move(snapshot));
+    tab.queued_recovery_generation = tab.edit_generation;
+    tab.first_unsaved_edit_tick = GetTickCount64();
+    tab.recovery_too_large = false;
+  }
+}
+
+void EditorWindow::on_recovery_timer() {
+  if (settings_.recovery_enabled) {
+    const std::uint64_t now = GetTickCount64();
+    for (Tab& tab : tab_controller_) {
+      if (!editable(tab) || !tab.document.dirty || !tab.view ||
+          tab.edit_generation == tab.queued_recovery_generation) {
+        continue;
+      }
+      const auto length =
+          static_cast<std::uint64_t>(sci(tab.view, SCI_GETLENGTH));
+      if (length > settings_.recovery_max_bytes) {
+        tab.recovery_too_large = true;
+        continue;
+      }
+      const bool idle =
+          tab.last_edit_tick != 0 && now - tab.last_edit_tick >= 2000;
+      const bool continuous =
+          tab.first_unsaved_edit_tick != 0 &&
+          now - tab.first_unsaved_edit_tick >= 10000;
+      if (!idle && !continuous) continue;
+
+      RecoverySnapshot snapshot;
+      snapshot.id = tab.id;
+      snapshot.path = tab.document.path;
+      snapshot.title = tab.document.title;
+      snapshot.encoding = tab.document.encoding;
+      snapshot.eol = tab.document.eol;
+      snapshot.language = tab.document.language;
+      snapshot.source_fingerprint = tab.document.fingerprint;
+      snapshot.content = editor_text(tab.view);
+      snapshot.created_unix_ms = unix_time_milliseconds();
+      snapshot.external_diverged = tab.document.external_diverged;
+      recovery_controller_.save(std::move(snapshot));
+      tab.queued_recovery_generation = tab.edit_generation;
+      tab.first_unsaved_edit_tick = now;
+      tab.recovery_too_large = false;
+    }
+  }
+  queue_manifest(false);
+  if (recovery_controller_.consume_write_error()) {
+    recovery_write_error_ = true;
+    manifest_dirty_ = true;
+    update_ui();
+  }
+}
+
+void EditorWindow::add_recent_file(const std::filesystem::path& input) {
+  const std::filesystem::path path = canonical_path(input);
+  recent_files_.erase(
+      std::remove_if(recent_files_.begin(), recent_files_.end(),
+                     [&](const auto& item) { return same_path(item, path); }),
+      recent_files_.end());
+  recent_files_.insert(recent_files_.begin(), path);
+  if (recent_files_.size() > 20) recent_files_.resize(20);
+  if (window_ && session_initialized_) rebuild_menu();
+  manifest_dirty_ = true;
+  queue_manifest(false);
+}
+
+void EditorWindow::add_closed_file(const std::filesystem::path& input) {
+  if (input.empty()) return;
+  const std::filesystem::path path = canonical_path(input);
+  closed_files_.erase(
+      std::remove_if(closed_files_.begin(), closed_files_.end(),
+                     [&](const auto& item) { return same_path(item, path); }),
+      closed_files_.end());
+  closed_files_.insert(closed_files_.begin(), path);
+  if (closed_files_.size() > 10) closed_files_.resize(10);
+  if (window_ && session_initialized_) rebuild_menu();
+  manifest_dirty_ = true;
+  queue_manifest(false);
+}
+
+void EditorWindow::reopen_closed_file() {
+  while (!closed_files_.empty()) {
+    const auto path = closed_files_.front();
+    closed_files_.erase(closed_files_.begin());
+    if (open_file(path)) break;
+  }
+  rebuild_menu();
+  manifest_dirty_ = true;
+  queue_manifest(false);
+}
+
+void EditorWindow::clear_recent_files() {
+  recent_files_.clear();
+  rebuild_menu();
+  manifest_dirty_ = true;
+  queue_manifest(false);
+}
+
+void EditorWindow::prepare_clean_shutdown() {
+  if (shutdown_prepared_) return;
+  for (Tab& tab : tab_controller_) {
+    recovery_controller_.remove(tab.id);
+  }
+  queue_manifest(true);
+  recovery_controller_.flush();
+  shutdown_prepared_ = true;
+}
+
+bool EditorWindow::persist_elevated_restart_state() {
+  recovery_controller_.flush();
+  bool saved = true;
+  for (const Tab& tab : tab_controller_) {
+    if (editable(tab) && tab.document.dirty && tab.view) {
+      RecoverySnapshot snapshot;
+      snapshot.id = tab.id;
+      snapshot.path = tab.document.path;
+      snapshot.title = tab.document.title;
+      snapshot.encoding = tab.document.encoding;
+      snapshot.eol = tab.document.eol;
+      snapshot.language = tab.document.language;
+      snapshot.source_fingerprint = tab.document.fingerprint;
+      snapshot.content = editor_text(tab.view);
+      snapshot.created_unix_ms = unix_time_milliseconds();
+      snapshot.external_diverged = tab.document.external_diverged;
+      saved = session_store_.save_recovery(snapshot) && saved;
+    } else {
+      saved = session_store_.remove_recovery(tab.id) && saved;
+    }
+  }
+  saved = session_store_.save_manifest(capture_manifest(false)) && saved;
+  if (saved) manifest_dirty_ = false;
+  return saved;
+}
+
+bool EditorWindow::offer_elevated_restart(
+    const Tab& tab, const std::filesystem::path& target,
+    const std::string_view content_sha256) {
+  if (process_is_elevated()) return false;
+  const int answer = MessageBoxW(
+      window_,
+      tr(L"В неподписанной сборке безопасный вспомогательный процесс "
+         L"с повышенными правами отключён.\n\n"
+         L"Перезапустить весь Listopad++ от имени администратора и "
+         L"повторить сохранение?\n\n"
+         L"Несохранённые вкладки будут временно записаны в recovery и "
+         L"восстановлены. В повышенном режиме открывайте только доверенные "
+         L"файлы.",
+         L"The secure elevated helper is disabled in an unsigned build.\n\n"
+         L"Restart all of Listopad++ as administrator and retry the save?\n\n"
+         L"Unsaved tabs will be written temporarily to recovery and restored. "
+         L"Open only trusted files while the editor is elevated."),
+      LISTOPAD_PRODUCT_NAME, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+  if (answer != IDYES) return true;
+
+  if (!persist_elevated_restart_state()) {
+    MessageBoxW(
+        window_,
+        tr(L"Не удалось подготовить несохранённые вкладки к перезапуску.",
+           L"Unable to prepare unsaved tabs for restart."),
+        LISTOPAD_PRODUCT_NAME, MB_OK | MB_ICONERROR);
+    return true;
+  }
+
+  const std::filesystem::path executable = current_module_path();
+  if (executable.empty()) {
+    MessageBoxW(window_,
+                tr(L"Не удалось определить путь к Listopad++.",
+                   L"Unable to determine the Listopad++ executable path."),
+                LISTOPAD_PRODUCT_NAME, MB_OK | MB_ICONERROR);
+    return true;
+  }
+
+  const std::wstring ready_event_name =
+      L"Local\\ListopadPP.ElevatedRestart." +
+      std::to_wstring(GetCurrentProcessId()) + L"." +
+      utf8_to_wide(new_session_id());
+  const HANDLE ready_event =
+      CreateEventW(nullptr, TRUE, FALSE, ready_event_name.c_str());
+  if (!ready_event) {
+    MessageBoxW(
+        window_,
+        (tr(L"Не удалось подготовить синхронизацию перезапуска:\n",
+            L"Unable to prepare restart synchronization:\n") +
+         win32_error_message(GetLastError()))
+            .c_str(),
+        LISTOPAD_PRODUCT_NAME, MB_OK | MB_ICONERROR);
+    return true;
+  }
+
+  const std::wstring parameters =
+      L"--elevated-restart " + std::to_wstring(GetCurrentProcessId()) +
+      L" " + quote_command_line_argument(ready_event_name) +
+      L" " + quote_command_line_argument(utf8_to_wide(tab.id)) +
+      L" " + quote_command_line_argument(canonical_path(target).wstring()) +
+      L" " + quote_command_line_argument(utf8_to_wide(content_sha256));
+  SHELLEXECUTEINFOW execute{sizeof(execute)};
+  execute.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+  execute.lpVerb = L"runas";
+  execute.lpFile = executable.c_str();
+  execute.lpParameters = parameters.c_str();
+  execute.nShow = SW_SHOWNORMAL;
+  if (!ShellExecuteExW(&execute)) {
+    const DWORD error = GetLastError();
+    CloseHandle(ready_event);
+    if (error != ERROR_CANCELLED) {
+      MessageBoxW(
+          window_,
+          (tr(L"Не удалось перезапустить Listopad++:\n",
+              L"Unable to restart Listopad++:\n") +
+           win32_error_message(error))
+              .c_str(),
+          LISTOPAD_PRODUCT_NAME, MB_OK | MB_ICONERROR);
+    }
+    return true;
+  }
+
+  const HANDLE wait_handles[]{ready_event, execute.hProcess};
+  const DWORD ready =
+      execute.hProcess
+          ? WaitForMultipleObjects(2, wait_handles, FALSE, 15'000)
+          : WAIT_FAILED;
+  CloseHandle(ready_event);
+  if (execute.hProcess) CloseHandle(execute.hProcess);
+  if (ready != WAIT_OBJECT_0) {
+    MessageBoxW(
+        window_,
+        tr(L"Новый процесс не смог принять сеанс. Текущий редактор "
+           L"продолжит работу.",
+           L"The new process could not accept the session. The current "
+           L"editor will keep running."),
+        LISTOPAD_PRODUCT_NAME, MB_OK | MB_ICONERROR);
+    return true;
+  }
+
+  restarting_elevated_ = true;
+  PostMessageW(window_, WM_CLOSE, 0, 0);
+  return true;
+}
+
+void EditorWindow::show_settings() {
+  SettingsDialog::show(
+      window_, instance_, settings_,
+      [this](const Settings& settings, const SettingsActions& actions) {
+        return apply_settings(settings, actions);
+      });
+}
+
+bool EditorWindow::apply_settings(const Settings& next,
+                                  const SettingsActions& actions) {
+  if (!save_settings(next)) return false;
+
+  if (actions.clear_recovery || !next.recovery_enabled) {
+    recovery_controller_.flush();
+    if (!session_store_.clear_recovery()) return false;
+  }
+  if (actions.clear_session) {
+    recovery_controller_.flush();
+    if (!session_store_.clear_manifest()) return false;
+  }
+  if (actions.clear_history) {
+    recent_files_.clear();
+    closed_files_.clear();
+  }
+
+  settings_ = next;
+  const bool resolved_dark =
+      settings_.theme == "dark" ||
+      (settings_.theme == "system" && system_dark_theme());
+  dark_ = resolved_dark;
+
+  const int logical_dpi =
+      dpi_ > 0 ? dpi_ : static_cast<int>(GetDpiForWindow(window_));
+  HFONT replacement = CreateFontW(
+      -MulDiv(settings_.font_size, logical_dpi, 72), 0, 0, 0, FW_NORMAL,
+      FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+      CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN,
+      utf8_to_wide(settings_.font_face).c_str());
+  if (replacement) {
+    if (editor_font_) DeleteObject(editor_font_);
+    editor_font_ = replacement;
+  }
+  for (Tab& tab : tab_controller_) {
+    if (tab.view_kind != ViewKind::Text && tab.view) {
+      SendMessageW(tab.view, WM_SETFONT,
+                   reinterpret_cast<WPARAM>(editor_font_), TRUE);
+    }
+  }
+  const auto retention = std::chrono::hours(
+      24 * settings_.recovery_retention_days);
+  const auto retention_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(retention)
+          .count();
+  const std::uint64_t now = unix_time_milliseconds();
+  (void)session_store_.remove_expired_recovery(
+      now > static_cast<std::uint64_t>(retention_ms)
+          ? now - static_cast<std::uint64_t>(retention_ms)
+          : 0);
+  recovery_write_error_ = false;
+  update_localized_controls();
+  apply_window_theme();
+  rebuild_menu();
+  update_ui();
+  manifest_dirty_ = true;
+  queue_manifest(false);
+  return true;
+}
+
+void EditorWindow::update_localized_controls() {
+  SetWindowTextW(reload_button_, tr(L"Перезагрузить", L"Reload"));
+  SetWindowTextW(keep_button_, tr(L"Оставить", L"Keep"));
+  SetWindowTextW(find_button_, tr(L"Найти далее", L"Find next"));
+  SetWindowTextW(find_all_button_, tr(L"Найти всё", L"Find all"));
+  SetWindowTextW(replace_button_, tr(L"Заменить", L"Replace"));
+  SetWindowTextW(replace_all_button_, tr(L"Заменить всё", L"Replace all"));
+  SetWindowTextW(all_tabs_check_, tr(L"Все вкладки", L"All tabs"));
+  SetWindowTextW(whole_word_check_, tr(L"Слово", L"Whole word"));
+  SetWindowTextW(wrap_check_, tr(L"По кругу", L"Wrap"));
+  SetWindowTextW(selection_only_check_,
+                 tr(L"В выделении", L"Selection only"));
+}
+
+void EditorWindow::configure_editor(Tab& tab) {
+  const HWND editor = tab.view;
+  const Document& document = tab.document;
   auto& api = dark_mode_api();
   if (api.allow_dark_mode_for_window) api.allow_dark_mode_for_window(editor, dark_ ? TRUE : FALSE);
   SetWindowTheme(editor, dark_ ? L"DarkMode_Explorer" : nullptr, nullptr);
@@ -1404,9 +2232,10 @@ void EditorWindow::configure_editor(HWND editor, const Document& document) {
   sci(editor, SCI_INDICSETALPHA, kFindAllIndicator, dark_ ? 75 : 55);
   sci(editor, SCI_INDICSETOUTLINEALPHA, kFindAllIndicator, 150);
   sci(editor, SCI_INDICSETUNDER, kFindAllIndicator, TRUE);
-  const auto found = std::find_if(tab_controller_.begin(), tab_controller_.end(),
-                                  [editor](const Tab& tab) { return tab.view == editor; });
-  if (found != tab_controller_.end()) apply_language(*found, document.language);
+  // apply_language updates Document::language, so do not pass a string_view
+  // into that same string and then assign through it.
+  const std::string language = document.language;
+  apply_language(tab, language);
 }
 
 void EditorWindow::apply_language(Tab& tab, const std::string_view language) {
@@ -1550,6 +2379,7 @@ void EditorWindow::apply_language(Tab& tab, const std::string_view language) {
     DocumentMap::restyle(tab.map, tab.view, settings_.font_face, dark_);
     DocumentMap::sync(tab.map, tab.view);
   }
+  manifest_dirty_ = true;
   update_ui();
 }
 
@@ -1606,8 +2436,16 @@ bool EditorWindow::open_file(const std::filesystem::path& input, const Encoding*
     MessageBoxW(window_, (tr(L"Не удалось открыть файл:\n", L"Unable to open file:\n") + win32_error_message(loaded.error)).c_str(),
                 LISTOPAD_PRODUCT_NAME, MB_ICONERROR); return false;
   }
-  ViewKind view_kind =
-      loaded.document.large_file ? ViewKind::LargeText : ViewKind::Text;
+  const bool technology_log_candidate =
+      !loaded.document.likely_binary &&
+      (loaded.document.large_file
+           ? TechnologyLogView::looks_like(path)
+           : looks_like_technology_log(loaded.document.text));
+  ViewKind view_kind = technology_log_candidate
+                           ? ViewKind::TechnologyLog
+                           : (loaded.document.large_file
+                                  ? ViewKind::LargeText
+                                  : ViewKind::Text);
   if (loaded.document.likely_binary) {
     const int answer = MessageBoxW(
         window_,
@@ -1628,8 +2466,10 @@ bool EditorWindow::open_file(const std::filesystem::path& input, const Encoding*
     TabCtrl_DeleteAllItems(tabs_);
   }
   Tab tab;
+  initialize_tab_identity(tab);
   tab.document = std::move(loaded.document);
   tab.view_kind = view_kind;
+  tab.technology_log_candidate = technology_log_candidate;
   tab_controller_.push_back(std::move(tab));
   Tab& added = tab_controller_.back();
   if (!create_tab_views(added)) {
@@ -1641,10 +2481,16 @@ bool EditorWindow::open_file(const std::filesystem::path& input, const Encoding*
                 LISTOPAD_PRODUCT_NAME, MB_OK | MB_ICONERROR);
     return false;
   }
-  if (added.view_kind == ViewKind::Hex) added.document.text.clear();
+  if (added.view_kind == ViewKind::Hex ||
+      added.view_kind == ViewKind::TechnologyLog) {
+    added.document.text.clear();
+  }
   TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = tab_controller_.back().document.title.data();
   TabCtrl_InsertItem(tabs_, static_cast<int>(tab_controller_.size() - 1), &item);
-  watcher_.watch(path); activate_tab(static_cast<int>(tab_controller_.size() - 1)); return true;
+  watcher_.watch(path);
+  activate_tab(static_cast<int>(tab_controller_.size() - 1));
+  add_recent_file(path);
+  return true;
 }
 
 void EditorWindow::open_request(const ipc::OpenFilesRequest& request) {
@@ -1665,6 +2511,51 @@ void EditorWindow::open_request(const ipc::OpenFilesRequest& request) {
   // normal — it held before being minimized.
   if (IsIconic(window_)) ShowWindow(window_, SW_RESTORE);
   SetForegroundWindow(window_);
+}
+
+void EditorWindow::retry_elevated_save(
+    const ElevatedRestartRequest& request) {
+  const auto found = std::find_if(
+      tab_controller_.begin(), tab_controller_.end(),
+      [&](const Tab& tab) { return tab.id == request.tab_id; });
+  const auto retry_failed = [this] {
+    MessageBoxW(
+        window_,
+        tr(L"Сеанс восстановлен, но безопасно повторить сохранение не "
+           L"удалось. Проверьте вкладку и сохраните её вручную.",
+           L"The session was restored, but the save could not be retried "
+           L"safely. Check the tab and save it manually."),
+        LISTOPAD_PRODUCT_NAME, MB_OK | MB_ICONWARNING);
+  };
+  if (!process_is_elevated() || found == tab_controller_.end() ||
+      !same_path(found->document.path,
+                 canonical_path(request.target_path)) ||
+      !editable(*found) || !found->view) {
+    retry_failed();
+    return;
+  }
+
+  const std::string text = editor_text(found->view);
+  const EncodingResult encoded =
+      encode_text(text, found->document.encoding);
+  if (!encoded.ok) {
+    retry_failed();
+    return;
+  }
+  const auto digest = sha256(encoded.bytes);
+  std::string expected_hash = request.content_sha256;
+  std::transform(expected_hash.begin(), expected_hash.end(),
+                 expected_hash.begin(), [](const unsigned char value) {
+                   return static_cast<char>(std::tolower(value));
+                 });
+  if (hex_encode(digest) != expected_hash) {
+    retry_failed();
+    return;
+  }
+
+  activate_tab(static_cast<int>(
+      std::distance(tab_controller_.begin(), found)));
+  (void)save_tab(*found);
 }
 
 bool EditorWindow::save_tab(Tab& tab, bool save_as) {
@@ -1710,6 +2601,14 @@ bool EditorWindow::save_tab(Tab& tab, bool save_as) {
                 LISTOPAD_PRODUCT_NAME, MB_ICONWARNING); return false;
   }
   if (saved.status != SaveStatus::Saved) {
+    if (saved.error == ERROR_INVALID_IMAGE_HASH && !save_as &&
+        output_encoding == tab.document.encoding &&
+        same_path(target, tab.document.path)) {
+      const auto digest = sha256(encoded.bytes);
+      if (offer_elevated_restart(tab, target, hex_encode(digest))) {
+        return false;
+      }
+    }
     MessageBoxW(window_, (tr(L"Не удалось сохранить файл:\n", L"Unable to save the file:\n") + win32_error_message(saved.error)).c_str(),
                 LISTOPAD_PRODUCT_NAME, MB_ICONERROR); return false;
   }
@@ -1718,7 +2617,14 @@ bool EditorWindow::save_tab(Tab& tab, bool save_as) {
   tab.document.fingerprint = saved.fingerprint; tab.document.dirty = false;
   tab.document.external_diverged = false; tab.external_notice_pending = false;
   tab.document.text = std::move(text); sci(tab.view, SCI_SETSAVEPOINT);
-  watcher_.watch(tab.document.path); apply_language(tab, detect_language(tab.document.path).id);
+  tab.first_unsaved_edit_tick = 0;
+  tab.last_edit_tick = 0;
+  tab.recovery_too_large = false;
+  tab.queued_recovery_generation = tab.edit_generation;
+  recovery_controller_.remove(tab.id);
+  watcher_.watch(tab.document.path);
+  add_recent_file(tab.document.path);
+  apply_language(tab, detect_language(tab.document.path).id);
   update_ui(); return true;
 }
 
@@ -1738,7 +2644,12 @@ void EditorWindow::reopen_active(const Encoding& encoding) {
   }
   tab->document = std::move(loaded.document);
   tab->external_notice_pending = false;
-  configure_editor(tab->view, tab->document);
+  recovery_controller_.remove(tab->id);
+  tab->first_unsaved_edit_tick = 0;
+  tab->last_edit_tick = 0;
+  tab->queued_recovery_generation = tab->edit_generation;
+  tab->recovery_too_large = false;
+  configure_editor(*tab);
   set_editor_text(*tab, tab->document.text,
                   DocumentMutationOrigin::Reload);
   update_ui();
@@ -1749,17 +2660,26 @@ bool EditorWindow::confirm_close(Tab& tab) {
   const int answer = MessageBoxW(window_, (tr(L"Сохранить изменения в «", L"Save changes to “") + tab.document.title + L"»?").c_str(),
                                  LISTOPAD_PRODUCT_NAME, MB_YESNOCANCEL | MB_ICONQUESTION);
   if (answer == IDCANCEL) return false;
-  return answer == IDNO || save_tab(tab);
+  if (answer == IDNO) {
+    recovery_controller_.remove(tab.id);
+    return true;
+  }
+  return save_tab(tab);
 }
 
 bool EditorWindow::close_tab(const int index) {
   if (index < 0 || index >= static_cast<int>(tab_controller_.size()) || !confirm_close(tab_controller_[index])) return false;
   clear_find_all_results();
   search_.cancel();
+  const std::filesystem::path closed_path =
+      tab_controller_[index].document.path;
+  recovery_controller_.remove(tab_controller_[index].id);
   destroy_tab_views(tab_controller_[index]);
   tab_controller_.erase(tab_controller_.begin() + index);
   TabCtrl_DeleteItem(tabs_, index);
+  add_closed_file(closed_path);
   if (tab_controller_.empty()) add_empty_tab(); else activate_tab(std::min(index, static_cast<int>(tab_controller_.size()) - 1));
+  queue_manifest(false);
   return true;
 }
 
@@ -1769,6 +2689,7 @@ void EditorWindow::handle_external_change(const std::filesystem::path& path) {
     const FileFingerprint current = fingerprint_file(path);
     if (current == tab.document.fingerprint) continue;
     tab.document.external_diverged = true; tab.external_notice_pending = true;
+    manifest_dirty_ = true;
   }
   update_ui();
 }
@@ -1793,13 +2714,17 @@ void EditorWindow::reload_active() {
       }
       tab->document.text.clear();
       break;
+    case ViewKind::TechnologyLog:
+      if (!TechnologyLogView::open(tab->view, tab->document.path)) return;
+      tab->document.fingerprint = fingerprint_file(tab->document.path);
+      break;
     case ViewKind::Text: {
       auto loaded = load_document(tab->document.path,
                                   settings_.large_file_threshold,
                                   &tab->document.encoding);
       if (!loaded.ok || loaded.document.large_file) return;
       tab->document = std::move(loaded.document);
-      configure_editor(tab->view, tab->document);
+      configure_editor(*tab);
       set_editor_text(*tab, tab->document.text,
                       DocumentMutationOrigin::Reload);
       if (tab->map) {
@@ -1812,6 +2737,11 @@ void EditorWindow::reload_active() {
   }
   tab->external_notice_pending = false;
   tab->document.external_diverged = false;
+  recovery_controller_.remove(tab->id);
+  tab->first_unsaved_edit_tick = 0;
+  tab->last_edit_tick = 0;
+  tab->queued_recovery_generation = tab->edit_generation;
+  tab->recovery_too_large = false;
   refresh_view_menu_state();
   update_ui();
 }
@@ -1843,6 +2773,8 @@ void EditorWindow::apply_search_visibility() {
   const bool visible = ui_state.search_mode != SearchMode::Hidden;
   const bool editable_tab = tab && editable(*tab);
   const bool hex = tab && tab->view_kind == ViewKind::Hex;
+  const bool technology_log =
+      tab && tab->view_kind == ViewKind::TechnologyLog;
   if (ui_state.search_mode == SearchMode::Replace && !editable_tab) {
     ui_state.search_mode = SearchMode::Find;
   }
@@ -1857,10 +2789,12 @@ void EditorWindow::apply_search_visibility() {
   ShowWindow(find_all_button_, visible && editable_tab ? SW_SHOW : SW_HIDE);
   ShowWindow(regex_check_, visible && !hex ? SW_SHOW : SW_HIDE);
   ShowWindow(case_check_, visible ? SW_SHOW : SW_HIDE);
-  ShowWindow(all_tabs_check_, visible && !hex ? SW_SHOW : SW_HIDE);
+  ShowWindow(all_tabs_check_,
+             visible && !hex && !technology_log ? SW_SHOW : SW_HIDE);
   ShowWindow(whole_word_check_, visible && !hex ? SW_SHOW : SW_HIDE);
   ShowWindow(wrap_check_, visible ? SW_SHOW : SW_HIDE);
-  ShowWindow(selection_only_check_, visible && !hex ? SW_SHOW : SW_HIDE);
+  ShowWindow(selection_only_check_,
+             visible && !hex && !technology_log ? SW_SHOW : SW_HIDE);
   ShowWindow(replace_text_, replace_visible ? SW_SHOW : SW_HIDE);
   ShowWindow(replace_button_, replace_visible ? SW_SHOW : SW_HIDE);
   ShowWindow(replace_all_button_, replace_visible ? SW_SHOW : SW_HIDE);
@@ -1886,6 +2820,9 @@ void EditorWindow::find_next() {
       options.regular_expression = false;
       options.whole_word = false;
       HexViewWindow::find_next(tab->view, pattern, options, wrap);
+      return;
+    case ViewKind::TechnologyLog:
+      TechnologyLogView::find_next(tab->view, pattern, options, wrap);
       return;
     case ViewKind::Text:
       break;
@@ -2374,9 +3311,16 @@ void EditorWindow::on_notify(const NMHDR& notification) {
                           : DocumentMutationOrigin::User;
       const DocumentMutationPolicy policy = mutation_policy(origin);
       if (notification.code == SCN_SAVEPOINTLEFT) tab.document.dirty = true;
-      if (notification.code == SCN_SAVEPOINTREACHED) tab.document.dirty = false;
+      if (notification.code == SCN_SAVEPOINTREACHED) {
+        tab.document.dirty = false;
+        tab.first_unsaved_edit_tick = 0;
+        tab.last_edit_tick = 0;
+        tab.queued_recovery_generation = tab.edit_generation;
+        tab.recovery_too_large = false;
+        recovery_controller_.remove(tab.id);
+      }
       if (notification.code == SCN_MODIFIED &&
-          !policy.reset_snippet && !tab.snippet_fields.empty()) {
+           !policy.reset_snippet && !tab.snippet_fields.empty()) {
         const auto& changed =
             reinterpret_cast<const SCNotification&>(notification);
         const bool inserted =
@@ -2390,6 +3334,14 @@ void EditorWindow::on_notify(const NMHDR& notification) {
               static_cast<std::size_t>(changed.position),
               static_cast<std::size_t>(changed.length), inserted);
           if (tab.snippet_fields.empty()) tab.snippet_index = 0;
+        }
+      }
+      if (notification.code == SCN_MODIFIED) {
+        const auto& changed =
+            reinterpret_cast<const SCNotification&>(notification);
+        if ((changed.modificationType &
+             (SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT)) != 0) {
+          mark_tab_edited(tab);
         }
       }
       if (tab.map && notification.code == SCN_MODIFIED &&
@@ -2409,6 +3361,7 @@ void EditorWindow::on_notify(const NMHDR& notification) {
       } else if (tab.map && notification.code == SCN_UPDATEUI) {
         DocumentMap::sync(tab.map, tab.view);
       }
+      if (notification.code == SCN_UPDATEUI) manifest_dirty_ = true;
       handled = true;
       break;
     }
@@ -2452,6 +3405,21 @@ void EditorWindow::on_command(const int command, const int notification,
     return;
   }
   Tab* tab = active_tab();
+  if (command >= IDM_FILE_RECENT_FIRST &&
+      command <= IDM_FILE_RECENT_LAST) {
+    const std::size_t index =
+        static_cast<std::size_t>(command - IDM_FILE_RECENT_FIRST);
+    if (index < recent_files_.size()) open_file(recent_files_[index]);
+    return;
+  }
+  if (command == IDM_FILE_REOPEN_CLOSED) {
+    reopen_closed_file();
+    return;
+  }
+  if (command == IDM_FILE_CLEAR_RECENT) {
+    clear_recent_files();
+    return;
+  }
   if (command >= static_cast<int>(kLanguageFirst) &&
       command < static_cast<int>(kLanguageFirst + language_menu_ids_.size())) {
     if (tab && editable(*tab))
@@ -2522,6 +3490,16 @@ void EditorWindow::update_ui() {
       SendMessageW(status_, SB_SETTEXTW, 3, pointer_param(L"—"));
       break;
     }
+    case ViewKind::TechnologyLog:
+      SendMessageW(
+          status_, SB_SETTEXTW, 0,
+          pointer_param(tr(L"Технологический журнал · только чтение",
+                           L"Technology log · read-only")));
+      SendMessageW(status_, SB_SETTEXTW, 1,
+                   pointer_param(encoding.c_str()));
+      SendMessageW(status_, SB_SETTEXTW, 2, pointer_param(L"—"));
+      SendMessageW(status_, SB_SETTEXTW, 3, pointer_param(L"1С"));
+      break;
     case ViewKind::Text: {
       update_position_status(*tab);
       SendMessageW(status_, SB_SETTEXTW, 1, pointer_param(encoding.c_str()));
@@ -2531,7 +3509,18 @@ void EditorWindow::update_ui() {
       break;
     }
   }
-  SendMessageW(status_, SB_SETTEXTW, 4, pointer_param(tab->document.external_diverged ? tr(L"Внешние изменения", L"External changes") : L""));
+  const wchar_t* recovery_status = L"";
+  if (tab->recovery_too_large) {
+    recovery_status =
+        tr(L"Recovery: файл превышает лимит",
+           L"Recovery: file exceeds limit");
+  } else if (recovery_write_error_) {
+    recovery_status =
+        tr(L"Ошибка записи recovery", L"Recovery write error");
+  } else if (tab->document.external_diverged) {
+    recovery_status = tr(L"Внешние изменения", L"External changes");
+  }
+  SendMessageW(status_, SB_SETTEXTW, 4, pointer_param(recovery_status));
   std::wstring window_title = tab->document.title + L" — " LISTOPAD_PRODUCT_NAME;
   SetWindowTextW(window_, window_title.c_str());
   refresh_view_menu_state();

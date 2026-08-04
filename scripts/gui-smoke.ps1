@@ -1,7 +1,8 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$Executable,
-  [string]$ArtifactsDirectory = (Join-Path $PSScriptRoot '..\build\gui-smoke')
+  [string]$ArtifactsDirectory = (Join-Path $PSScriptRoot '..\build\gui-smoke'),
+  [switch]$KeepProfile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,6 +14,8 @@ using System;
 using System.Runtime.InteropServices;
 
 public static class ListopadSmokeNative {
+  public delegate bool EnumWindowsProc(IntPtr window, IntPtr parameter);
+
   [StructLayout(LayoutKind.Sequential)]
   public struct Rect {
     public int Left;
@@ -21,9 +24,24 @@ public static class ListopadSmokeNative {
     public int Bottom;
   }
 
+  [StructLayout(LayoutKind.Sequential)]
+  public struct MenuBarInfo {
+    public uint cbSize;
+    public Rect rcBar;
+    public IntPtr hMenu;
+    public IntPtr hwndMenu;
+    public uint flags;
+  }
+
   [DllImport("user32.dll", CharSet = CharSet.Unicode)]
   public static extern IntPtr SendMessage(
       IntPtr window, uint message, IntPtr wparam, IntPtr lparam);
+
+  [DllImport("user32.dll", CharSet = CharSet.Unicode,
+      EntryPoint = "SendMessageW")]
+  public static extern IntPtr SendMessageText(
+      IntPtr window, uint message, IntPtr wparam,
+      System.Text.StringBuilder text);
 
   [DllImport("user32.dll", CharSet = CharSet.Unicode)]
   [return: MarshalAs(UnmanagedType.Bool)]
@@ -44,6 +62,11 @@ public static class ListopadSmokeNative {
   [DllImport("user32.dll")]
   [return: MarshalAs(UnmanagedType.Bool)]
   public static extern bool GetClientRect(IntPtr window, out Rect rect);
+
+  [DllImport("user32.dll")]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  public static extern bool GetMenuBarInfo(
+      IntPtr window, int objectId, int itemId, ref MenuBarInfo info);
 
   [DllImport("user32.dll")]
   [return: MarshalAs(UnmanagedType.Bool)]
@@ -70,8 +93,16 @@ public static class ListopadSmokeNative {
   public static extern IntPtr GetForegroundWindow();
 
   [DllImport("user32.dll")]
+  public static extern IntPtr GetLastActivePopup(IntPtr window);
+
+  [DllImport("user32.dll")]
   public static extern uint GetWindowThreadProcessId(
       IntPtr window, out uint processId);
+
+  [DllImport("user32.dll")]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  public static extern bool EnumWindows(
+      EnumWindowsProc callback, IntPtr parameter);
 
   [DllImport("kernel32.dll")]
   public static extern uint GetCurrentThreadId();
@@ -128,6 +159,7 @@ public static class ListopadSmokeNative {
 $WM_CLOSE = 0x0010
 $WM_KEYDOWN = 0x0100
 $WM_KEYUP = 0x0101
+$WM_COMMAND = 0x0111
 $WM_LBUTTONDOWN = 0x0201
 $WM_LBUTTONUP = 0x0202
 $GUI_SMOKE_COMMAND = 0x803F
@@ -138,13 +170,18 @@ $VK_TAB = 0x09
 $KEYEVENTF_KEYUP = 0x0002
 
 $IDM_FILE_SAVE = 1003
+$IDM_FILE_CLOSE = 1005
 $IDM_EDIT_UNDO = 1101
 $IDM_EDIT_REDO = 1102
 $IDM_SEARCH_FIND = 1201
 $IDM_SEARCH_REPLACE = 1202
 $IDM_TOOLS_FORMAT = 1301
+$IDM_TOOLS_SETTINGS = 1304
 $IDM_VIEW_HEX = 1403
+$IDM_VIEW_TECHNOLOGY_LOG = 1404
+$IDM_HELP_ABOUT = 1501
 $IDC_EDITOR = 2002
+$IDC_TAB = 2001
 $IDC_STATUS = 2003
 $IDC_SEARCH_PANEL = 2007
 $IDC_FIND_TEXT = 2008
@@ -154,6 +191,7 @@ $IDC_TOOLBAR = 2019
 $IDC_DOCUMENT_MAP = 2020
 $IDC_FIND_ALL = 2021
 $IDC_SEARCH_RESULTS = 2022
+$IDC_SETTINGS_LANGUAGE = 2101
 
 $SCI_SELECTALL = 2013
 $SCI_GOTOPOS = 2025
@@ -165,7 +203,13 @@ $SCI_CANUNDO = 2174
 $SCI_CANREDO = 2016
 $SCI_GETTEXT = 2182
 $SCI_GETTEXTLENGTH = 2183
+$TCM_GETITEMW = 0x133c
 $LB_GETCOUNT = 0x018B
+$BM_GETCHECK = 0x00F0
+$BM_CLICK = 0x00F5
+$LVM_GETITEMCOUNT = 0x1004
+$WM_GETTEXT = 0x000D
+$WM_GETTEXTLENGTH = 0x000E
 
 $PROCESS_VM_OPERATION = 0x0008
 $PROCESS_VM_READ = 0x0010
@@ -223,18 +267,42 @@ function Get-ControlText([IntPtr]$Window) {
   return $text.ToString()
 }
 
+function Get-VisibleTopLevelWindow([uint32]$ProcessId) {
+  $script:smokeEnumeratedWindow = [IntPtr]::Zero
+  $script:smokeEnumeratedProcess = $ProcessId
+  $callback = [ListopadSmokeNative+EnumWindowsProc]{
+    param([IntPtr]$window, [IntPtr]$parameter)
+    $ownerProcess = [uint32]0
+    [void][ListopadSmokeNative]::GetWindowThreadProcessId(
+        $window, [ref]$ownerProcess)
+    if ($ownerProcess -eq $script:smokeEnumeratedProcess -and
+        [ListopadSmokeNative]::IsWindowVisible($window)) {
+      $script:smokeEnumeratedWindow = $window
+      return $false
+    }
+    return $true
+  }
+  [void][ListopadSmokeNative]::EnumWindows(
+      $callback, [IntPtr]::Zero)
+  return $script:smokeEnumeratedWindow
+}
+
 function Assert-VisibleControl(
     [IntPtr]$Window, [int]$Id, [string]$Name) {
-  $control = Get-Control $Window $Id $Name
-  Assert-Smoke ([ListopadSmokeNative]::IsWindowVisible($control)) "$Name is hidden"
-  $rect = [ListopadSmokeNative+Rect]::new()
-  Assert-Smoke (
-      [ListopadSmokeNative]::GetWindowRect($control, [ref]$rect)) `
-      "$Name rectangle is unavailable"
-  Assert-Smoke (
-      ($rect.Right - $rect.Left) -gt 0 -and
-      ($rect.Bottom - $rect.Top) -gt 0) "$Name has an empty rectangle"
-  return $control
+  foreach ($attempt in 1..50) {
+    $control = [ListopadSmokeNative]::GetDlgItem($Window, $Id)
+    if ($control -ne [IntPtr]::Zero -and
+        [ListopadSmokeNative]::IsWindowVisible($control)) {
+      $rect = [ListopadSmokeNative+Rect]::new()
+      if ([ListopadSmokeNative]::GetWindowRect($control, [ref]$rect) -and
+          ($rect.Right - $rect.Left) -gt 0 -and
+          ($rect.Bottom - $rect.Top) -gt 0) {
+        return $control
+      }
+    }
+    Start-Sleep -Milliseconds 100
+  }
+  throw "GUI smoke failed: $Name did not become visible with a non-empty rectangle"
 }
 
 function Send-Shortcut([IntPtr]$Window, [byte]$Key) {
@@ -346,6 +414,57 @@ function Get-EditorText(
   }
 }
 
+function Get-RemoteControlText(
+    [IntPtr]$Control, [IntPtr]$ProcessHandle) {
+  $length = [int][ListopadSmokeNative]::SendMessage(
+      $Control, $script:WM_GETTEXTLENGTH,
+      [IntPtr]::Zero, [IntPtr]::Zero)
+  $characterCapacity = $length + 1
+  $text = [System.Text.StringBuilder]::new($characterCapacity)
+  [void][ListopadSmokeNative]::SendMessageText(
+      $Control, $script:WM_GETTEXT,
+      [IntPtr]$characterCapacity, $text)
+  return $text.ToString()
+}
+
+function Get-FirstTabTitle(
+    [IntPtr]$TabControl, [IntPtr]$ProcessHandle) {
+  $characterCapacity = 512
+  $textBytes = [byte[]]::new($characterCapacity * 2)
+  $remoteText = [ListopadSmokeNative]::VirtualAllocEx(
+      $ProcessHandle, [IntPtr]::Zero, [UIntPtr]$textBytes.Length,
+      $script:MEM_COMMIT -bor $script:MEM_RESERVE, $script:PAGE_READWRITE)
+  Assert-Smoke ($remoteText -ne [IntPtr]::Zero) `
+      'cannot allocate tab-title buffer'
+  try {
+    # TCITEMW on x64: mask@0, pszText@16, cchTextMax@24, sizeof=40.
+    $itemBytes = [byte[]]::new(40)
+    [BitConverter]::GetBytes([uint32]1).CopyTo($itemBytes, 0)
+    [BitConverter]::GetBytes($remoteText.ToInt64()).CopyTo($itemBytes, 16)
+    [BitConverter]::GetBytes($characterCapacity).CopyTo($itemBytes, 24)
+    Invoke-WithRemoteBytes $ProcessHandle $itemBytes {
+      param([IntPtr]$remoteItem)
+      Assert-Smoke (
+          [ListopadSmokeNative]::SendMessage(
+              $TabControl, $script:TCM_GETITEMW,
+              [IntPtr]::Zero, $remoteItem) -ne [IntPtr]::Zero) `
+          'cannot read first tab item'
+    }
+    $read = [UIntPtr]::Zero
+    Assert-Smoke (
+        [ListopadSmokeNative]::ReadProcessMemory(
+            $ProcessHandle, $remoteText, $textBytes,
+            [UIntPtr]$textBytes.Length, [ref]$read)) `
+        'cannot read tab-title text'
+    $title = [System.Text.Encoding]::Unicode.GetString($textBytes)
+    $terminator = $title.IndexOf([char]0)
+    return $terminator -ge 0 ? $title.Substring(0, $terminator) : $title
+  } finally {
+    [void][ListopadSmokeNative]::VirtualFreeEx(
+        $ProcessHandle, $remoteText, [UIntPtr]::Zero, $script:MEM_RELEASE)
+  }
+}
+
 function Replace-EditorText(
     [IntPtr]$Editor, [IntPtr]$ProcessHandle, [string]$Text) {
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text + [char]0)
@@ -401,14 +520,49 @@ function Save-WindowScreenshot([IntPtr]$Window, [string]$Path) {
   }
 }
 
+function Assert-DarkMenuRemainder([IntPtr]$Window, [string]$Screenshot) {
+  $windowRect = [ListopadSmokeNative+Rect]::new()
+  Assert-Smoke (
+      [ListopadSmokeNative]::GetWindowRect($Window, [ref]$windowRect)) `
+      'window rectangle is unavailable for menu colour check'
+  $bar = [ListopadSmokeNative+MenuBarInfo]::new()
+  $bar.cbSize = [Runtime.InteropServices.Marshal]::SizeOf($bar)
+  Assert-Smoke (
+      [ListopadSmokeNative]::GetMenuBarInfo(
+          $Window, -3, 0, [ref]$bar)) 'menu bar rectangle is unavailable'
+  $bitmap = [System.Drawing.Bitmap]::new($Screenshot)
+  try {
+    $x = [Math]::Max(0, $bitmap.Width - 20)
+    $y = [Math]::Max(
+        0, [Math]::Min(
+            $bitmap.Height - 1,
+            [int](($bar.rcBar.Top + $bar.rcBar.Bottom) / 2) -
+                $windowRect.Top))
+    $pixel = $bitmap.GetPixel($x, $y)
+    Assert-Smoke (
+        $pixel.R -lt 160 -and $pixel.G -lt 160 -and $pixel.B -lt 160) `
+        "dark menu remainder is bright at ($x,$y): $($pixel.R),$($pixel.G),$($pixel.B)"
+  } finally {
+    $bitmap.Dispose()
+  }
+}
+
 $resolvedExecutable = (Resolve-Path -LiteralPath $Executable).Path
+$expectedVersion = (Get-Item -LiteralPath $resolvedExecutable).VersionInfo.ProductVersion
+Assert-Smoke (-not [string]::IsNullOrWhiteSpace($expectedVersion)) `
+    'candidate executable has no product version'
 [System.IO.Directory]::CreateDirectory($ArtifactsDirectory) | Out-Null
 $resolvedArtifacts = (Resolve-Path -LiteralPath $ArtifactsDirectory).Path
 $runId = [Guid]::NewGuid().ToString('N')
 $profileDirectory = Join-Path ([System.IO.Path]::GetTempPath()) "ListopadPP-profile-$runId"
 $documentPath = Join-Path ([System.IO.Path]::GetTempPath()) "ListopadPP-smoke-$runId.html"
+$technologyLogDirectory = Join-Path (
+    [System.IO.Path]::GetTempPath()) "ListopadPP-tj-$runId"
+$technologyLogPath = Join-Path $technologyLogDirectory '26072812.log'
 $searchScreenshot = Join-Path $resolvedArtifacts 'search-panel.png'
 $formatScreenshot = Join-Path $resolvedArtifacts 'formatted-map.png'
+$technologyLogScreenshot =
+    Join-Path $resolvedArtifacts 'technology-log-raw.png'
 $process = $null
 $processHandle = [IntPtr]::Zero
 $mainWindow = [IntPtr]::Zero
@@ -448,6 +602,18 @@ try {
   $originalText = [string]::Join("`r`n", $lines) + "`r`n"
   [System.IO.File]::WriteAllText(
       $documentPath, $originalText, [System.Text.UTF8Encoding]::new($false))
+  [System.IO.Directory]::CreateDirectory($technologyLogDirectory) | Out-Null
+  $technologyLogText =
+      "17:48.771000-0,VRSREQUEST,4,level=INFO,process=1cv8c," +
+      "OSThread=48850,Method=POST,URI='/e1cib/logForm?cmd=query'," +
+      "Headers='One: 1`nTwo: 2',Body=0`n" +
+      "17:49.825000-1053999,SCALL,0,level=INFO,process=1cv8c," +
+      "OSThread=49130,IName=IVResourceRemoteConnection,MName=send`n" +
+      "17:49.826000-0,VRSRESPONSE,4,level=INFO,process=1cv8c," +
+      "OSThread=48850,Status=200,Phrase=OK,Body=60126"
+  [System.IO.File]::WriteAllText(
+      $technologyLogPath, $technologyLogText,
+      [System.Text.UTF8Encoding]::new($false))
 
   $env:LISTOPAD_INSTANCE_ID = "gui-smoke-$runId"
   $env:LISTOPAD_PROFILE_DIR = $profileDirectory
@@ -476,6 +642,7 @@ try {
   $processHandle = Open-EditorProcess ([uint32]$process.Id)
 
   $editor = Assert-VisibleControl $mainWindow $IDC_EDITOR 'editor'
+  $tabControl = Assert-VisibleControl $mainWindow $IDC_TAB 'tab control'
   Assert-Smoke ((Get-ControlClass $editor) -eq 'Scintilla') `
       "text editor class is not Scintilla"
   $toolbar = Assert-VisibleControl $mainWindow $IDC_TOOLBAR 'toolbar'
@@ -558,9 +725,13 @@ try {
       [ListopadSmokeNative]::SendMessage(
           $editor, $SCI_CANUNDO, [IntPtr]::Zero, [IntPtr]::Zero) -ne
           [IntPtr]::Zero) 'formatted document cannot be undone'
+  $dirtyTabTitle = Get-FirstTabTitle $tabControl $processHandle
+  Assert-Smoke ($dirtyTabTitle -match '\.html \*$') `
+      "dirty tab lost its extension or marker: '$dirtyTabTitle'"
   [void](Assert-VisibleControl $mainWindow $IDC_TOOLBAR 'toolbar after Format')
   [void](Assert-VisibleControl $mainWindow $IDC_DOCUMENT_MAP 'map after Format')
   Save-WindowScreenshot $mainWindow $formatScreenshot
+  Assert-DarkMenuRemainder $mainWindow $formatScreenshot
 
   Send-Command $mainWindow $IDM_FILE_SAVE
   Send-Command $mainWindow $IDM_VIEW_HEX
@@ -600,9 +771,224 @@ try {
       'second Emmet expansion after deletion failed'
   Send-Command $mainWindow $IDM_FILE_SAVE
 
+  $technologyLogOpener = Start-Process -FilePath $resolvedExecutable `
+      -ArgumentList @('--', $technologyLogPath) -PassThru
+  Assert-Smoke ($technologyLogOpener.WaitForExit(5000)) `
+      'technology log request was not delivered to the running instance'
+  $technologyLogView = [IntPtr]::Zero
+  foreach ($attempt in 1..100) {
+    $candidate = [ListopadSmokeNative]::GetDlgItem(
+        $mainWindow, $IDC_EDITOR)
+    if ($candidate -ne [IntPtr]::Zero -and
+        [ListopadSmokeNative]::IsWindowVisible($candidate) -and
+        (Get-ControlClass $candidate) -eq 'ListopadPPTechnologyLog') {
+      $technologyLogView = $candidate
+      break
+    }
+    Start-Sleep -Milliseconds 100
+  }
+  Assert-Smoke ($technologyLogView -ne [IntPtr]::Zero) `
+      'technology log did not open in its structured view'
+  $technologyLogEvents = Get-Control $technologyLogView 3 `
+      'technology log event list'
+  $technologyLogEventCount = 0
+  foreach ($attempt in 1..100) {
+    $technologyLogEventCount =
+        [int][ListopadSmokeNative]::SendMessage(
+            $technologyLogEvents, $LVM_GETITEMCOUNT,
+            [IntPtr]::Zero, [IntPtr]::Zero)
+    if ($technologyLogEventCount -eq 3) { break }
+    Start-Sleep -Milliseconds 100
+  }
+  Assert-Smoke ($technologyLogEventCount -eq 3) `
+      "technology log indexed $technologyLogEventCount events instead of 3"
+  $rawToggle = Get-Control $technologyLogView 4 `
+      'technology log raw toggle'
+  $rawRecord = Get-Control $technologyLogView 6 `
+      'technology log raw record'
+  Assert-Smoke (
+      -not [ListopadSmokeNative]::IsWindowVisible($rawRecord)) `
+      'raw technology log record is visible by default'
+  [void][ListopadSmokeNative]::SendMessage(
+      $rawToggle, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
+  Start-Sleep -Milliseconds 150
+  Assert-Smoke ([ListopadSmokeNative]::IsWindowVisible($rawRecord)) `
+      'raw technology log record did not expand'
+  $rawTechnologyLogText =
+      Get-RemoteControlText $rawRecord $processHandle
+  Assert-Smoke ($rawTechnologyLogText -match '^17:48\.771000-0,') `
+      "expanded raw technology log record does not match its source: $($rawTechnologyLogText.Substring(0, [Math]::Min(80, $rawTechnologyLogText.Length)))"
+  Save-WindowScreenshot $mainWindow $technologyLogScreenshot
+  Send-Command $mainWindow $IDM_VIEW_TECHNOLOGY_LOG
+  $technologyLogTextView = Assert-VisibleControl $mainWindow $IDC_EDITOR `
+      'technology log text view'
+  Assert-Smoke ((Get-ControlClass $technologyLogTextView) -eq 'Scintilla') `
+      'technology log did not switch back to source text'
+  Send-Command $mainWindow $IDM_VIEW_TECHNOLOGY_LOG
+  $technologyLogStructuredAgain = Assert-VisibleControl `
+      $mainWindow $IDC_EDITOR 'restored technology log view'
+  Assert-Smoke (
+      (Get-ControlClass $technologyLogStructuredAgain) -eq
+          'ListopadPPTechnologyLog') `
+      'source text did not switch back to the technology log view'
+  $restoredRawToggle = Get-Control $technologyLogStructuredAgain 4 `
+      'restored technology log raw toggle'
+  $restoredRawRecord = Get-Control $technologyLogStructuredAgain 6 `
+      'restored technology log raw record'
+  Assert-Smoke (
+      [ListopadSmokeNative]::SendMessage(
+          $restoredRawToggle, $BM_GETCHECK,
+          [IntPtr]::Zero, [IntPtr]::Zero) -eq [IntPtr]1) `
+      'technology log raw-toggle state was not preserved'
+  Assert-Smoke ([ListopadSmokeNative]::IsWindowVisible($restoredRawRecord)) `
+      'technology log raw panel state was not preserved'
+  Send-Command $mainWindow $IDM_FILE_CLOSE
+
+  [void][ListopadSmokeNative]::PostMessage(
+      $mainWindow, $GUI_SMOKE_COMMAND,
+      [IntPtr]$IDM_TOOLS_SETTINGS, [IntPtr]::Zero)
+  $settingsDialog = [IntPtr]::Zero
+  foreach ($attempt in 1..50) {
+    $candidate = [ListopadSmokeNative]::GetLastActivePopup($mainWindow)
+    if ($candidate -ne [IntPtr]::Zero -and $candidate -ne $mainWindow) {
+      $settingsDialog = $candidate
+      break
+    }
+    Start-Sleep -Milliseconds 100
+  }
+  Assert-Smoke ($settingsDialog -ne [IntPtr]::Zero) `
+      'settings dialog did not open'
+  [void](Get-Control $settingsDialog $IDC_SETTINGS_LANGUAGE `
+      'settings language')
+  [void][ListopadSmokeNative]::SendMessage(
+      $settingsDialog, $WM_COMMAND, [IntPtr]2, [IntPtr]::Zero)
+
+  [void][ListopadSmokeNative]::PostMessage(
+      $mainWindow, $GUI_SMOKE_COMMAND,
+      [IntPtr]$IDM_HELP_ABOUT, [IntPtr]::Zero)
+  $aboutDialog = [IntPtr]::Zero
+  foreach ($attempt in 1..50) {
+    $candidate = [ListopadSmokeNative]::GetLastActivePopup($mainWindow)
+    if ($candidate -ne [IntPtr]::Zero -and $candidate -ne $mainWindow) {
+      $aboutDialog = $candidate
+      break
+    }
+    Start-Sleep -Milliseconds 100
+  }
+  Assert-Smoke ($aboutDialog -ne [IntPtr]::Zero) `
+      'about dialog did not open'
+  $aboutText = Get-ControlText (
+      Get-Control $aboutDialog 0xffff 'about text')
+  $escapedVersion = [regex]::Escape($expectedVersion)
+  Assert-Smoke ($aboutText -match "Listopad\+\+ $escapedVersion") `
+      "about dialog contains an unexpected version: '$aboutText'"
+  [void][ListopadSmokeNative]::SendMessage(
+      $aboutDialog, $WM_COMMAND, [IntPtr]1, [IntPtr]::Zero)
+
   [void][ListopadSmokeNative]::PostMessage(
       $mainWindow, $WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero)
   Assert-Smoke ($process.WaitForExit(5000)) 'candidate did not close cleanly'
+  $sessionPath = Join-Path $profileDirectory 'session.json'
+  Assert-Smoke (Test-Path $sessionPath) 'clean session manifest was not written'
+  $session = Get-Content -LiteralPath $sessionPath -Raw | ConvertFrom-Json
+  Assert-Smoke ([bool]$session.cleanShutdown) `
+      'clean session manifest is still marked unclean'
+  Assert-Smoke ($session.tabs.Count -ge 1) `
+      'clean session manifest contains no tabs'
+  Assert-Smoke ($session.recentFiles.Count -ge 1) `
+      'recent-file history was not persisted'
+
+  [void][ListopadSmokeNative]::CloseHandle($processHandle)
+  $processHandle = [IntPtr]::Zero
+  $process = Start-Process -FilePath $resolvedExecutable `
+      -ArgumentList @('--', $documentPath) -PassThru
+  $mainWindow = [IntPtr]::Zero
+  foreach ($attempt in 1..100) {
+    if ($process.HasExited) {
+      throw "Recovery candidate exited with code $($process.ExitCode)"
+    }
+    $process.Refresh()
+    if ($process.MainWindowHandle -ne [IntPtr]::Zero) {
+      $mainWindow = $process.MainWindowHandle
+      break
+    }
+    Start-Sleep -Milliseconds 100
+  }
+  Assert-Smoke ($mainWindow -ne [IntPtr]::Zero) `
+      'recovery candidate main window did not appear'
+  $processHandle = Open-EditorProcess ([uint32]$process.Id)
+  $recoveryEditor = Assert-VisibleControl $mainWindow $IDC_EDITOR `
+      'recovery editor'
+  $recoverySentinel = "Recovered unsaved text $runId"
+  Replace-EditorText $recoveryEditor $processHandle $recoverySentinel
+  $snapshot = $null
+  foreach ($attempt in 1..60) {
+    $snapshot = Get-ChildItem `
+        (Join-Path $profileDirectory 'recovery') -Filter '*.json' `
+        -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($snapshot) { break }
+    Start-Sleep -Milliseconds 100
+  }
+  Assert-Smoke ($null -ne $snapshot) `
+      'recovery snapshot was not written after an idle edit'
+  Stop-Process -Id $process.Id -Force
+  $process.WaitForExit()
+  [void][ListopadSmokeNative]::CloseHandle($processHandle)
+  $processHandle = [IntPtr]::Zero
+  $uncleanSession =
+      Get-Content -LiteralPath $sessionPath -Raw | ConvertFrom-Json
+  Assert-Smoke (-not [bool]$uncleanSession.cleanShutdown) `
+      'running session was not marked unclean before forced termination'
+
+  $process = Start-Process -FilePath $resolvedExecutable -PassThru
+  $recoveryPrompt = [IntPtr]::Zero
+  foreach ($attempt in 1..100) {
+    if ($process.HasExited) {
+      throw "Recovery restart exited with code $($process.ExitCode)"
+    }
+    $process.Refresh()
+    $candidate = $process.MainWindowHandle
+    if ($candidate -eq [IntPtr]::Zero) {
+      $candidate = Get-VisibleTopLevelWindow ([uint32]$process.Id)
+    }
+    if ($candidate -ne [IntPtr]::Zero) {
+      $recoveryPrompt = $candidate
+      break
+    }
+    Start-Sleep -Milliseconds 100
+  }
+  Assert-Smoke ($recoveryPrompt -ne [IntPtr]::Zero) `
+      'recovery choice dialog did not appear'
+  [void][ListopadSmokeNative]::SendMessage(
+      $recoveryPrompt, $WM_COMMAND, [IntPtr]1, [IntPtr]::Zero)
+  $mainWindow = [IntPtr]::Zero
+  $recoveredEditor = [IntPtr]::Zero
+  foreach ($attempt in 1..100) {
+    $process.Refresh()
+    $candidate = $process.MainWindowHandle
+    if ($candidate -ne [IntPtr]::Zero) {
+      $candidateEditor =
+          [ListopadSmokeNative]::GetDlgItem($candidate, $IDC_EDITOR)
+      if ($candidateEditor -ne [IntPtr]::Zero) {
+        $mainWindow = $candidate
+        $recoveredEditor = $candidateEditor
+        break
+      }
+    }
+    Start-Sleep -Milliseconds 100
+  }
+  Assert-Smoke ($recoveredEditor -ne [IntPtr]::Zero) `
+      'recovered editor did not appear'
+  $processHandle = Open-EditorProcess ([uint32]$process.Id)
+  Assert-Smoke (
+      (Get-EditorText $recoveredEditor $processHandle) -eq
+          $recoverySentinel) 'recovered text does not match the snapshot'
+  $recoveryPassed = $true
+  Stop-Process -Id $process.Id -Force
+  $process.WaitForExit()
+  [void][ListopadSmokeNative]::CloseHandle($processHandle)
+  $processHandle = [IntPtr]::Zero
+  $mainWindow = [IntPtr]::Zero
 
   [pscustomobject]@{
     executable = $resolvedExecutable
@@ -613,8 +999,15 @@ try {
     mapFirstVisibleLine = $firstVisibleLine
     mapLineCount = $lineCount
     textSurfacePreserved = $restoredEditor -eq $editor
+    dirtyTabTitle = $dirtyTabTitle
+    darkMenuRemainder = $true
     ctrlFKeyboard = $ctrlFKeyboard
     ctrlHKeyboard = $ctrlHKeyboard
+    settingsDialog = $settingsDialog -ne [IntPtr]::Zero
+    aboutVersion = $aboutText
+    recovery = $recoveryPassed
+    technologyLogEvents = $technologyLogEventCount
+    technologyLogRaw = $technologyLogScreenshot
     searchScreenshot = $searchScreenshot
     formatScreenshot = $formatScreenshot
     status = 'passed'
@@ -634,6 +1027,12 @@ try {
     }
   }
   Remove-Item -LiteralPath $documentPath -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $profileDirectory -Recurse -Force `
+  Remove-Item -LiteralPath $technologyLogDirectory -Recurse -Force `
       -ErrorAction SilentlyContinue
+  if ($KeepProfile) {
+    Write-Warning "GUI smoke profile preserved at $profileDirectory"
+  } else {
+    Remove-Item -LiteralPath $profileDirectory -Recurse -Force `
+        -ErrorAction SilentlyContinue
+  }
 }

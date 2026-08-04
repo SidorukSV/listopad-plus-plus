@@ -2,10 +2,13 @@
 
 #include "listopad/document.h"
 #include "listopad/emmet_engine.h"
+#include "listopad/technology_log.h"
 
 #include <windows.h>
 
 #include <cstddef>
+#include <cstdint>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -15,6 +18,7 @@ enum class DocumentViewKind {
   Text,
   LargeText,
   Hex,
+  TechnologyLog,
 };
 
 struct EditorSurface {
@@ -24,11 +28,19 @@ struct EditorSurface {
 
 class DocumentSession final {
  public:
+  std::string id;
   Document document;
   DocumentViewKind view_kind{DocumentViewKind::Text};
   HWND view{nullptr};
   HWND map{nullptr};
   bool external_notice_pending{false};
+  bool technology_log_candidate{false};
+  TechnologyLogUiState technology_log_ui;
+  std::uint64_t edit_generation{0};
+  std::uint64_t queued_recovery_generation{0};
+  std::uint64_t first_unsaved_edit_tick{0};
+  std::uint64_t last_edit_tick{0};
+  bool recovery_too_large{false};
   std::vector<EmmetField> snippet_fields;
   std::size_t snippet_index{0};
 

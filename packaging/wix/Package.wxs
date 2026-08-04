@@ -8,6 +8,8 @@
     <MajorUpgrade AllowSameVersionUpgrades="yes"
                   DowngradeErrorMessage="A newer version of Listopad++ is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <Icon Id="ListopadPP.ico" SourceFile="$(var.IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="ListopadPP.ico" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Listopad++">
@@ -21,7 +23,8 @@
     <Component Id="DesktopShortcut" Directory="DesktopFolder" Bitness="always64">
       <Shortcut Id="ListopadDesktopShortcut" Name="Listopad++"
                 Description="Fast offline text editor"
-                Target="[INSTALLFOLDER]ListopadPP.exe" WorkingDirectory="INSTALLFOLDER" />
+                Target="[INSTALLFOLDER]ListopadPP.exe" WorkingDirectory="INSTALLFOLDER"
+                Icon="ListopadPP.ico" IconIndex="0" />
       <RegistryValue Root="HKCU" Key="Software\Listopad++" Name="DesktopShortcut"
                      Type="integer" Value="1" KeyPath="yes" />
     </Component>
@@ -34,7 +37,8 @@
         <File Id="ListopadPPExe" Source="$(var.StageDir)\ListopadPP.exe" KeyPath="yes">
           <Shortcut Id="ListopadStartMenuShortcut" Directory="ProgramMenuFolder"
                     Name="Listopad++" Description="Fast offline text editor"
-                    WorkingDirectory="INSTALLFOLDER" Advertise="yes" />
+                    WorkingDirectory="INSTALLFOLDER" Advertise="yes"
+                    Icon="ListopadPP.ico" IconIndex="0" />
         </File>
       </Component>
       <Component Bitness="always64">

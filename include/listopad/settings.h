@@ -28,9 +28,14 @@ struct Settings {
   bool show_document_map{true};
   std::uint64_t large_file_threshold{128ull * 1024ull * 1024ull};
   std::string fallback_encoding{"auto"};
+  bool recovery_enabled{true};
+  bool restore_session{true};
+  std::uint64_t recovery_max_bytes{16ull * 1024ull * 1024ull};
+  int recovery_retention_days{7};
   WindowBounds window;
 };
 
+std::filesystem::path profile_directory();
 std::filesystem::path settings_path();
 Settings load_settings();
 bool save_settings(const Settings& settings);
