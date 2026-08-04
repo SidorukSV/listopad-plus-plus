@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$Version = '0.1.6',
+  [string]$Version = '0.2.1',
   [string]$PfxPath,
   [securestring]$PfxPassword,
   [string]$SignCommand,
@@ -183,10 +183,11 @@ if ($wix) {
   $wixPdb = [IO.Path]::ChangeExtension($msi, '.wixpdb')
   if (Test-Path -LiteralPath $wixPdb) { Remove-Item -LiteralPath $wixPdb -Force }
   $productCode = Get-ProductCode $Version
+  $iconFile = Join-Path $repo 'assets\icons\listopad-plus-plus-multisize.ico'
   & $wix.Source build (Join-Path $repo 'packaging\wix\Package.wxs') -arch x64 `
     -ext WixToolset.UI.wixext -culture ru-ru `
     -d "StageDir=$stage" -d "ProductVersion=$Version" -d "ProductCode=$productCode" `
-    -d "LicenseRtf=$licenseRtf" -o $msi
+    -d "LicenseRtf=$licenseRtf" -d "IconFile=$iconFile" -o $msi
   if ($LASTEXITCODE) { throw 'WiX MSI build failed.' }
   Write-Host "MSI ProductCode: $productCode"
 } else {

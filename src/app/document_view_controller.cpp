@@ -5,6 +5,7 @@
 #include "hex_view_window.h"
 #include "large_file_view.h"
 #include "resource.h"
+#include "technology_log_view.h"
 #include "listopad/file_io.h"
 #include "listopad/strings.h"
 #include "listopad/version.h"
@@ -18,6 +19,11 @@ namespace listopad::app {
 
 void DocumentViewController::destroy(EditorWindow&, DocumentSession& session) const
     noexcept {
+  if (session.view &&
+      session.view_kind == DocumentViewKind::TechnologyLog) {
+    session.technology_log_ui =
+        TechnologyLogView::ui_state(session.view);
+  }
   if (session.map) {
     DestroyWindow(session.map);
     session.map = nullptr;
@@ -38,13 +44,15 @@ bool DocumentViewController::create(EditorWindow& owner,
     case DocumentViewKind::Text:
       session.view = owner.create_editor();
       if (!session.view) return false;
-      owner.configure_editor(session.view, session.document);
+      owner.configure_editor(session);
       owner.set_editor_text(session, session.document.text,
                             DocumentMutationOrigin::Load);
       session.map = DocumentMap::create(owner.window_, IDC_DOCUMENT_MAP,
                                         owner.instance_);
       if (!session.map) {
+        const DWORD error = GetLastError();
         destroy(owner, session);
+        SetLastError(error);
         return false;
       }
       DocumentMap::attach(session.map, session.view);
@@ -77,6 +85,19 @@ bool DocumentViewController::create(EditorWindow& owner,
         return false;
       }
       return true;
+    case DocumentViewKind::TechnologyLog:
+      session.view = TechnologyLogView::create(
+          owner.window_, IDC_EDITOR, owner.russian(),
+          session.technology_log_ui);
+      if (!session.view) return false;
+      SendMessageW(session.view, WM_SETFONT,
+                   reinterpret_cast<WPARAM>(owner.editor_font_), TRUE);
+      TechnologyLogView::set_dark(session.view, owner.dark_);
+      if (!TechnologyLogView::open(session.view, session.document.path)) {
+        destroy(owner, session);
+        return false;
+      }
+      return true;
   }
   return false;
 }
@@ -92,8 +113,9 @@ bool DocumentViewController::switch_to(
   DocumentViewKind target = requested;
   std::optional<Document> replacement;
   if (requested == DocumentViewKind::Text &&
-      session.view_kind == DocumentViewKind::Hex &&
-      !session.has_preserved_text_surface()) {
+      (session.view_kind == DocumentViewKind::TechnologyLog ||
+       (session.view_kind == DocumentViewKind::Hex &&
+        !session.has_preserved_text_surface()))) {
     const Encoding* forced =
         session.document.large_file ? nullptr : &session.document.encoding;
     LoadDocumentResult loaded =
@@ -162,7 +184,7 @@ bool DocumentViewController::switch_to(
       ShowWindow(session.map,
                  owner.settings_.show_document_map ? SW_SHOW : SW_HIDE);
     }
-    owner.configure_editor(session.view, session.document);
+    owner.configure_editor(session);
     if (session.map) {
       DocumentMap::attach(session.map, session.view);
       DocumentMap::restyle(session.map, session.view,
@@ -182,6 +204,11 @@ bool DocumentViewController::switch_to(
   const DocumentViewKind previous_kind = session.view_kind;
   const HWND previous_view = session.view;
   const HWND previous_map = session.map;
+  if (previous_kind == DocumentViewKind::TechnologyLog &&
+      previous_view) {
+    session.technology_log_ui =
+        TechnologyLogView::ui_state(previous_view);
+  }
   std::optional<Document> previous_document;
   if (replacement) {
     previous_document = std::move(session.document);
@@ -206,6 +233,9 @@ bool DocumentViewController::switch_to(
 
   if (previous_map) DestroyWindow(previous_map);
   if (previous_view) DestroyWindow(previous_view);
+  if (target == DocumentViewKind::TechnologyLog) {
+    session.document.text.clear();
+  }
   session.clear_transient_editor_state();
   owner.refresh_view_menu_state();
   owner.update_ui();

@@ -5,7 +5,9 @@
 #include "document_view_controller.h"
 #include "elevated_client.h"
 #include "file_watcher.h"
+#include "recovery_controller.h"
 #include "search_controller.h"
+#include "settings_dialog.h"
 #include "tab_controller.h"
 #include "window_layout_controller.h"
 #include "listopad/command_line.h"
@@ -14,6 +16,7 @@
 #include "listopad/emmet_engine.h"
 #include "listopad/ipc_protocol.h"
 #include "listopad/settings.h"
+#include "listopad/session.h"
 
 #include <windows.h>
 #include <commctrl.h>
@@ -21,7 +24,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -29,7 +34,8 @@ namespace listopad::app {
 
 class EditorWindow final {
  public:
-  EditorWindow(HINSTANCE instance, Settings settings);
+  EditorWindow(HINSTANCE instance, Settings settings,
+               bool restoring_elevated_restart = false);
   ~EditorWindow();
   EditorWindow(const EditorWindow&) = delete;
   EditorWindow& operator=(const EditorWindow&) = delete;
@@ -37,6 +43,7 @@ class EditorWindow final {
   bool create(int show_command);
   HWND handle() const noexcept { return window_; }
   void open_request(const ipc::OpenFilesRequest& request);
+  void retry_elevated_save(const ElevatedRestartRequest& request);
 
   static constexpr UINT kOpenRequestMessage = WM_APP + 1;
   static constexpr UINT kExternalChangeMessage = WM_APP + 2;
@@ -113,6 +120,35 @@ class EditorWindow final {
   int active_index() const;
   void activate_tab(int index);
   void add_empty_tab();
+  void initialize_tab_identity(Tab& tab);
+  bool initialize_session();
+  void restore_manifest(const SessionManifest& manifest);
+  void restore_recovery(const std::vector<RecoverySnapshot>& snapshots);
+  void restore_elevated_restart(
+      const SessionManifest& manifest,
+      const std::vector<RecoverySnapshot>& snapshots);
+  bool restore_session_tab(const SessionTab& stored);
+  bool restore_recovery_tab(const RecoverySnapshot& snapshot);
+  void apply_stored_view_state(Tab& tab, const SessionTab& stored);
+  [[nodiscard]] SessionManifest capture_manifest(bool clean_shutdown) const;
+  [[nodiscard]] SessionTab capture_session_tab(const Tab& tab) const;
+  void queue_manifest(bool clean_shutdown);
+  void mark_tab_edited(Tab& tab);
+  void on_recovery_timer();
+  void capture_recovery_now();
+  void add_recent_file(const std::filesystem::path& path);
+  void add_closed_file(const std::filesystem::path& path);
+  void reopen_closed_file();
+  void clear_recent_files();
+  void prepare_clean_shutdown();
+  bool persist_elevated_restart_state();
+  bool offer_elevated_restart(
+      const Tab& tab, const std::filesystem::path& target,
+      std::string_view content_sha256);
+  void show_settings();
+  bool apply_settings(const Settings& settings,
+                      const SettingsActions& actions);
+  void update_localized_controls();
   [[nodiscard]] static bool editable(const Tab& tab) {
     return tab.editable();
   }
@@ -129,7 +165,7 @@ class EditorWindow final {
   void handle_external_change(const std::filesystem::path& path);
 
   HWND create_editor();
-  void configure_editor(HWND editor, const Document& document);
+  void configure_editor(Tab& tab);
   void apply_language(Tab& tab, std::string_view language);
   std::string editor_text(HWND editor) const;
   void set_editor_text(Tab& tab, std::string_view text,
@@ -157,6 +193,17 @@ class EditorWindow final {
 
   HINSTANCE instance_{};
   Settings settings_;
+  SessionStore session_store_;
+  RecoveryController recovery_controller_;
+  std::vector<std::filesystem::path> recent_files_;
+  std::vector<std::filesystem::path> closed_files_;
+  bool session_initialized_{false};
+  bool manifest_dirty_{true};
+  bool shutdown_prepared_{false};
+  bool restoring_elevated_restart_{false};
+  bool restarting_elevated_{false};
+  bool recovery_write_error_{false};
+  bool ending_windows_session_{false};
   HWND window_{nullptr};
   HWND toolbar_{nullptr};
   HWND tabs_{nullptr};

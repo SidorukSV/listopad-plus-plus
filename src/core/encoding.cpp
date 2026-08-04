@@ -225,9 +225,14 @@ Encoding encoding_from_name(std::string_view name) {
   std::string lower(name);
   std::transform(lower.begin(), lower.end(), lower.begin(),
                  [](const unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-  if (lower == "utf-8-bom" || lower == "utf8bom") return {EncodingKind::Utf8, CP_UTF8, true};
-  if (lower == "utf-16" || lower == "utf-16le") return {EncodingKind::Utf16Le, 1200, true};
-  if (lower == "utf-16be") return {EncodingKind::Utf16Be, 1201, true};
+  if (lower == "utf-8-bom" || lower == "utf8bom" ||
+      lower == "utf-8 bom")
+    return {EncodingKind::Utf8, CP_UTF8, true};
+  if (lower == "utf-16" || lower == "utf-16le" ||
+      lower == "utf-16 le")
+    return {EncodingKind::Utf16Le, 1200, true};
+  if (lower == "utf-16be" || lower == "utf-16 be")
+    return {EncodingKind::Utf16Be, 1201, true};
   if (lower == "windows-1251" || lower == "cp1251") return {EncodingKind::WindowsCodePage, 1251, false};
   if (lower == "windows-1252" || lower == "cp1252") return {EncodingKind::WindowsCodePage, 1252, false};
   if (lower == "cp866" || lower == "ibm866") return {EncodingKind::WindowsCodePage, 866, false};

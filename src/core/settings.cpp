@@ -39,20 +39,24 @@ void read_string(yyjson_val* root, const char* key, std::string& target) {
 
 bool portable_mode() { return std::filesystem::exists(executable_directory() / L"portable.flag"); }
 
-std::filesystem::path settings_path() {
+std::filesystem::path profile_directory() {
   if (const auto profile = profile_directory_override()) {
-    return *profile / L"settings.json";
+    return *profile;
   }
-  if (portable_mode()) return executable_directory() / L"settings.json";
+  if (portable_mode()) return executable_directory();
   PWSTR local = nullptr;
   std::filesystem::path result;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &local))) {
-    result = std::filesystem::path(local) / L"Listopad++" / L"settings.json";
+    result = std::filesystem::path(local) / L"Listopad++";
     CoTaskMemFree(local);
   } else {
-    result = executable_directory() / L"settings.json";
+    result = executable_directory();
   }
   return result;
+}
+
+std::filesystem::path settings_path() {
+  return profile_directory() / L"settings.json";
 }
 
 Settings load_settings() {
@@ -75,6 +79,10 @@ Settings load_settings() {
     if (yyjson_val* value = yyjson_obj_get(root, "indentWithTabs"); yyjson_is_bool(value)) settings.indent_with_tabs = yyjson_get_bool(value);
     if (yyjson_val* value = yyjson_obj_get(root, "documentMap"); yyjson_is_bool(value)) settings.show_document_map = yyjson_get_bool(value);
     if (yyjson_val* value = yyjson_obj_get(root, "largeFileThreshold"); yyjson_is_uint(value)) settings.large_file_threshold = yyjson_get_uint(value);
+    if (yyjson_val* value = yyjson_obj_get(root, "recoveryEnabled"); yyjson_is_bool(value)) settings.recovery_enabled = yyjson_get_bool(value);
+    if (yyjson_val* value = yyjson_obj_get(root, "restoreSession"); yyjson_is_bool(value)) settings.restore_session = yyjson_get_bool(value);
+    if (yyjson_val* value = yyjson_obj_get(root, "recoveryMaxBytes"); yyjson_is_uint(value)) settings.recovery_max_bytes = yyjson_get_uint(value);
+    if (yyjson_val* value = yyjson_obj_get(root, "recoveryRetentionDays"); yyjson_is_int(value)) settings.recovery_retention_days = static_cast<int>(yyjson_get_int(value));
     if (yyjson_val* window = yyjson_obj_get(root, "window"); yyjson_is_obj(window)) {
       const auto read_int = [](yyjson_val* obj, const char* key, int& target) {
         if (yyjson_val* value = yyjson_obj_get(obj, key); yyjson_is_int(value)) target = static_cast<int>(yyjson_get_int(value));
@@ -93,6 +101,10 @@ Settings load_settings() {
   settings.font_size = std::clamp(settings.font_size, 7, 40);
   settings.indent_size = std::clamp(settings.indent_size, 1, 8);
   settings.large_file_threshold = std::clamp<std::uint64_t>(settings.large_file_threshold, 16ull << 20, 4ull << 30);
+  settings.recovery_max_bytes = std::clamp<std::uint64_t>(
+      settings.recovery_max_bytes, 1ull << 20, 128ull << 20);
+  settings.recovery_retention_days =
+      std::clamp(settings.recovery_retention_days, 1, 30);
   return settings;
 }
 
@@ -109,6 +121,10 @@ bool save_settings(const Settings& settings) {
   yyjson_mut_obj_add_bool(doc, root, "documentMap", settings.show_document_map);
   yyjson_mut_obj_add_uint(doc, root, "largeFileThreshold", settings.large_file_threshold);
   yyjson_mut_obj_add_str(doc, root, "fallbackEncoding", settings.fallback_encoding.c_str());
+  yyjson_mut_obj_add_bool(doc, root, "recoveryEnabled", settings.recovery_enabled);
+  yyjson_mut_obj_add_bool(doc, root, "restoreSession", settings.restore_session);
+  yyjson_mut_obj_add_uint(doc, root, "recoveryMaxBytes", settings.recovery_max_bytes);
+  yyjson_mut_obj_add_int(doc, root, "recoveryRetentionDays", settings.recovery_retention_days);
   if (settings.window.valid) {
     yyjson_mut_val* window = yyjson_mut_obj(doc);
     yyjson_mut_obj_add_int(doc, window, "x", settings.window.x);

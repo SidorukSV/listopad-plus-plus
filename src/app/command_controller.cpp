@@ -2,6 +2,7 @@
 
 #include "editor_window.h"
 #include "resource.h"
+#include "technology_log_view.h"
 #include "listopad/settings.h"
 #include "listopad/shell_registration.h"
 #include "listopad/version.h"
@@ -82,13 +83,23 @@ bool CommandController::dispatch(EditorWindow& owner, const int command) const {
       if (tab && owner.editable(*tab)) sci(tab->view, SCI_CUT);
       return true;
     case IDM_EDIT_COPY:
-      if (tab && owner.editable(*tab)) sci(tab->view, SCI_COPY);
+      if (tab && tab->view_kind ==
+                     EditorWindow::ViewKind::TechnologyLog) {
+        TechnologyLogView::copy(tab->view);
+      } else if (tab && owner.editable(*tab)) {
+        sci(tab->view, SCI_COPY);
+      }
       return true;
     case IDM_EDIT_PASTE:
       if (tab && owner.editable(*tab)) sci(tab->view, SCI_PASTE);
       return true;
     case IDM_EDIT_SELECT_ALL:
-      if (tab && owner.editable(*tab)) sci(tab->view, SCI_SELECTALL);
+      if (tab && tab->view_kind ==
+                     EditorWindow::ViewKind::TechnologyLog) {
+        TechnologyLogView::select_all(tab->view);
+      } else if (tab && owner.editable(*tab)) {
+        sci(tab->view, SCI_SELECTALL);
+      }
       return true;
     case IDM_SEARCH_FIND:
       owner.show_search(false);
@@ -141,8 +152,33 @@ bool CommandController::dispatch(EditorWindow& owner, const int command) const {
                       : EditorWindow::ViewKind::Hex);
       }
       return true;
+    case IDM_VIEW_TECHNOLOGY_LOG:
+      if (!tab || !tab->document.has_path() || tab->document.dirty ||
+          tab->document.external_diverged ||
+          !tab->technology_log_candidate) {
+        MessageBeep(MB_ICONINFORMATION);
+        MessageBoxW(
+            owner.window_,
+            owner.tr(
+                L"Представление ТЖ доступно только для распознанного "
+                L"технологического журнала без локальных или внешних "
+                L"изменений.",
+                L"The technology log view is available only for a recognized "
+                L"technology log without local or external changes."),
+            LISTOPAD_PRODUCT_NAME, MB_OK | MB_ICONINFORMATION);
+      } else {
+        owner.switch_tab_view(
+            *tab,
+            tab->view_kind == EditorWindow::ViewKind::TechnologyLog
+                ? EditorWindow::ViewKind::Text
+                : EditorWindow::ViewKind::TechnologyLog);
+      }
+      return true;
     case IDM_TOOLS_FORMAT:
       owner.format_active();
+      return true;
+    case IDM_TOOLS_SETTINGS:
+      owner.show_settings();
       return true;
     case IDM_TOOLS_REGISTER:
       MessageBoxW(
