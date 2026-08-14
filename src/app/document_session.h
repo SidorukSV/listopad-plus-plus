@@ -2,6 +2,7 @@
 
 #include "listopad/document.h"
 #include "listopad/emmet_engine.h"
+#include "listopad/performance_log.h"
 #include "listopad/technology_log.h"
 
 #include <windows.h>
@@ -19,6 +20,7 @@ enum class DocumentViewKind {
   LargeText,
   Hex,
   TechnologyLog,
+  PerformanceLog,
 };
 
 struct EditorSurface {
@@ -36,6 +38,8 @@ class DocumentSession final {
   bool external_notice_pending{false};
   bool technology_log_candidate{false};
   TechnologyLogUiState technology_log_ui;
+  bool performance_log_candidate{false};
+  PerformanceLogUiState performance_log_ui;
   std::uint64_t edit_generation{0};
   std::uint64_t queued_recovery_generation{0};
   std::uint64_t first_unsaved_edit_tick{0};

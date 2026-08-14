@@ -5,6 +5,7 @@
 /.vscode/
 /tools/emmet/node_modules/
 /.agents/
+/.claude/
 /.codex/
 *.user
 *.suo

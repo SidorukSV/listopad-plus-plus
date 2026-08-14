@@ -4,6 +4,7 @@
 #include "editor_window.h"
 #include "hex_view_window.h"
 #include "large_file_view.h"
+#include "performance_log_view.h"
 #include "resource.h"
 #include "technology_log_view.h"
 #include "listopad/file_io.h"
@@ -23,6 +24,11 @@ void DocumentViewController::destroy(EditorWindow&, DocumentSession& session) co
       session.view_kind == DocumentViewKind::TechnologyLog) {
     session.technology_log_ui =
         TechnologyLogView::ui_state(session.view);
+  }
+  if (session.view &&
+      session.view_kind == DocumentViewKind::PerformanceLog) {
+    session.performance_log_ui =
+        PerformanceLogView::ui_state(session.view);
   }
   if (session.map) {
     DestroyWindow(session.map);
@@ -98,6 +104,19 @@ bool DocumentViewController::create(EditorWindow& owner,
         return false;
       }
       return true;
+    case DocumentViewKind::PerformanceLog:
+      session.view = PerformanceLogView::create(
+          owner.window_, IDC_EDITOR, owner.russian(),
+          session.performance_log_ui);
+      if (!session.view) return false;
+      SendMessageW(session.view, WM_SETFONT,
+                   reinterpret_cast<WPARAM>(owner.editor_font_), TRUE);
+      PerformanceLogView::set_dark(session.view, owner.dark_);
+      if (!PerformanceLogView::open(session.view, session.document.path)) {
+        destroy(owner, session);
+        return false;
+      }
+      return true;
   }
   return false;
 }
@@ -114,6 +133,7 @@ bool DocumentViewController::switch_to(
   std::optional<Document> replacement;
   if (requested == DocumentViewKind::Text &&
       (session.view_kind == DocumentViewKind::TechnologyLog ||
+       session.view_kind == DocumentViewKind::PerformanceLog ||
        (session.view_kind == DocumentViewKind::Hex &&
         !session.has_preserved_text_surface()))) {
     const Encoding* forced =
@@ -131,7 +151,10 @@ bool DocumentViewController::switch_to(
           LISTOPAD_PRODUCT_NAME, MB_ICONERROR);
       return false;
     }
-    target = loaded.document.large_file ? DocumentViewKind::LargeText
+    // A binary performance log has no readable text projection, so leaving the
+    // structured view lands on Hex rather than on mojibake.
+    target = loaded.document.large_file  ? DocumentViewKind::LargeText
+             : loaded.document.likely_binary ? DocumentViewKind::Hex
                                         : DocumentViewKind::Text;
     replacement = std::move(loaded.document);
   }
@@ -209,6 +232,10 @@ bool DocumentViewController::switch_to(
     session.technology_log_ui =
         TechnologyLogView::ui_state(previous_view);
   }
+  if (previous_kind == DocumentViewKind::PerformanceLog && previous_view) {
+    session.performance_log_ui =
+        PerformanceLogView::ui_state(previous_view);
+  }
   std::optional<Document> previous_document;
   if (replacement) {
     previous_document = std::move(session.document);
@@ -233,7 +260,9 @@ bool DocumentViewController::switch_to(
 
   if (previous_map) DestroyWindow(previous_map);
   if (previous_view) DestroyWindow(previous_view);
-  if (target == DocumentViewKind::TechnologyLog) {
+  if (target == DocumentViewKind::TechnologyLog ||
+      target == DocumentViewKind::PerformanceLog ||
+      target == DocumentViewKind::Hex) {
     session.document.text.clear();
   }
   session.clear_transient_editor_state();
