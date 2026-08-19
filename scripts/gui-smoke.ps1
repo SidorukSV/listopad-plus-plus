@@ -179,6 +179,7 @@ $IDM_TOOLS_FORMAT = 1301
 $IDM_TOOLS_SETTINGS = 1304
 $IDM_VIEW_HEX = 1403
 $IDM_VIEW_TECHNOLOGY_LOG = 1404
+$IDM_VIEW_PERFORMANCE_LOG = 1405
 $IDM_HELP_ABOUT = 1501
 $IDC_EDITOR = 2002
 $IDC_TAB = 2001
@@ -559,10 +560,14 @@ $documentPath = Join-Path ([System.IO.Path]::GetTempPath()) "ListopadPP-smoke-$r
 $technologyLogDirectory = Join-Path (
     [System.IO.Path]::GetTempPath()) "ListopadPP-tj-$runId"
 $technologyLogPath = Join-Path $technologyLogDirectory '26072812.log'
+$performanceLogPath = Join-Path (
+    [System.IO.Path]::GetTempPath()) "ListopadPP-perf-$runId.csv"
 $searchScreenshot = Join-Path $resolvedArtifacts 'search-panel.png'
 $formatScreenshot = Join-Path $resolvedArtifacts 'formatted-map.png'
 $technologyLogScreenshot =
     Join-Path $resolvedArtifacts 'technology-log-raw.png'
+$performanceLogScreenshot =
+    Join-Path $resolvedArtifacts 'performance-log-samples.png'
 $process = $null
 $processHandle = [IntPtr]::Zero
 $mainWindow = [IntPtr]::Zero
@@ -613,6 +618,21 @@ try {
       "OSThread=48850,Status=200,Phrase=OK,Body=60126"
   [System.IO.File]::WriteAllText(
       $technologyLogPath, $technologyLogText,
+      [System.Text.UTF8Encoding]::new($false))
+  # A PDH-CSV export covers the whole performance-log projection without a
+  # committed binary fixture; the .blg reader shares the same document model.
+  $performanceLogText =
+      '"(PDH-CSV 4.0) (GMT Standard Time)(0)",' +
+      '"\\SMOKE\Память\Доступно МБ",' +
+      '"\\SMOKE\Процессор(_Total)\% загруженности процессора",' +
+      '"\\SMOKE\Физический диск(0 C:)\Средняя длина очереди диска"' +
+      "`r`n" +
+      '"08/13/2026 21:23:46.000","2048","12.5","0.4"' + "`r`n" +
+      '"08/13/2026 21:23:51.000","1024","18.0","0.9"' + "`r`n" +
+      '"08/13/2026 21:23:56.000","768","22.5","1.4"' + "`r`n" +
+      '"08/13/2026 21:24:01.000","512","30.0","1.8"' + "`r`n"
+  [System.IO.File]::WriteAllText(
+      $performanceLogPath, $performanceLogText,
       [System.Text.UTF8Encoding]::new($false))
 
   $env:LISTOPAD_INSTANCE_ID = "gui-smoke-$runId"
@@ -844,6 +864,76 @@ try {
       'technology log raw panel state was not preserved'
   Send-Command $mainWindow $IDM_FILE_CLOSE
 
+  $performanceLogOpener = Start-Process -FilePath $resolvedExecutable `
+      -ArgumentList @('--', $performanceLogPath) -PassThru
+  Assert-Smoke ($performanceLogOpener.WaitForExit(5000)) `
+      'performance log request was not delivered to the running instance'
+  $performanceLogView = [IntPtr]::Zero
+  foreach ($attempt in 1..100) {
+    $candidate = [ListopadSmokeNative]::GetDlgItem(
+        $mainWindow, $IDC_EDITOR)
+    if ($candidate -ne [IntPtr]::Zero -and
+        [ListopadSmokeNative]::IsWindowVisible($candidate) -and
+        (Get-ControlClass $candidate) -eq 'ListopadPPPerformanceLog') {
+      $performanceLogView = $candidate
+      break
+    }
+    Start-Sleep -Milliseconds 100
+  }
+  Assert-Smoke ($performanceLogView -ne [IntPtr]::Zero) `
+      'performance log did not open in its structured view'
+  $performanceCounters = Get-Control $performanceLogView 3 `
+      'performance log counter list'
+  $performanceCounterCount = 0
+  foreach ($attempt in 1..100) {
+    $performanceCounterCount =
+        [int][ListopadSmokeNative]::SendMessage(
+            $performanceCounters, $LVM_GETITEMCOUNT,
+            [IntPtr]::Zero, [IntPtr]::Zero)
+    if ($performanceCounterCount -eq 3) { break }
+    Start-Sleep -Milliseconds 100
+  }
+  Assert-Smoke ($performanceCounterCount -eq 3) `
+      "performance log indexed $performanceCounterCount counters instead of 3"
+  $samplesToggle = Get-Control $performanceLogView 4 `
+      'performance log samples toggle'
+  $samplesTable = Get-Control $performanceLogView 5 `
+      'performance log samples table'
+  Assert-Smoke (
+      -not [ListopadSmokeNative]::IsWindowVisible($samplesTable)) `
+      'performance log sample table is visible by default'
+  [void][ListopadSmokeNative]::SendMessage(
+      $samplesToggle, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
+  Start-Sleep -Milliseconds 150
+  Assert-Smoke ([ListopadSmokeNative]::IsWindowVisible($samplesTable)) `
+      'performance log sample table did not expand'
+  $performanceSampleCount =
+      [int][ListopadSmokeNative]::SendMessage(
+          $samplesTable, $LVM_GETITEMCOUNT, [IntPtr]::Zero, [IntPtr]::Zero)
+  Assert-Smoke ($performanceSampleCount -eq 4) `
+      "performance log listed $performanceSampleCount samples instead of 4"
+  Save-WindowScreenshot $mainWindow $performanceLogScreenshot
+  Send-Command $mainWindow $IDM_VIEW_PERFORMANCE_LOG
+  $performanceLogTextView = Assert-VisibleControl $mainWindow $IDC_EDITOR `
+      'performance log text view'
+  Assert-Smoke ((Get-ControlClass $performanceLogTextView) -eq 'Scintilla') `
+      'performance log did not switch back to source text'
+  Send-Command $mainWindow $IDM_VIEW_PERFORMANCE_LOG
+  $performanceLogStructuredAgain = Assert-VisibleControl `
+      $mainWindow $IDC_EDITOR 'restored performance log view'
+  Assert-Smoke (
+      (Get-ControlClass $performanceLogStructuredAgain) -eq
+          'ListopadPPPerformanceLog') `
+      'source text did not switch back to the performance log view'
+  $restoredSamplesToggle = Get-Control $performanceLogStructuredAgain 4 `
+      'restored performance log samples toggle'
+  Assert-Smoke (
+      [ListopadSmokeNative]::SendMessage(
+          $restoredSamplesToggle, $BM_GETCHECK,
+          [IntPtr]::Zero, [IntPtr]::Zero) -eq [IntPtr]1) `
+      'performance log sample-toggle state was not preserved'
+  Send-Command $mainWindow $IDM_FILE_CLOSE
+
   [void][ListopadSmokeNative]::PostMessage(
       $mainWindow, $GUI_SMOKE_COMMAND,
       [IntPtr]$IDM_TOOLS_SETTINGS, [IntPtr]::Zero)
@@ -1008,6 +1098,9 @@ try {
     recovery = $recoveryPassed
     technologyLogEvents = $technologyLogEventCount
     technologyLogRaw = $technologyLogScreenshot
+    performanceLogCounters = $performanceCounterCount
+    performanceLogSamples = $performanceSampleCount
+    performanceLogScreenshot = $performanceLogScreenshot
     searchScreenshot = $searchScreenshot
     formatScreenshot = $formatScreenshot
     status = 'passed'
@@ -1028,6 +1121,8 @@ try {
   }
   Remove-Item -LiteralPath $documentPath -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $technologyLogDirectory -Recurse -Force `
+      -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $performanceLogPath -Force `
       -ErrorAction SilentlyContinue
   if ($KeepProfile) {
     Write-Warning "GUI smoke profile preserved at $profileDirectory"

@@ -3,6 +3,7 @@
 #include "document_map.h"
 #include "hex_view_window.h"
 #include "large_file_view.h"
+#include "performance_log_view.h"
 #include "recovery_dialog.h"
 #include "resource.h"
 #include "technology_log_view.h"
@@ -13,6 +14,7 @@
 #include "listopad/lexers.h"
 #include "listopad/search.h"
 #include "listopad/shell_registration.h"
+#include "listopad/performance_log.h"
 #include "listopad/strings.h"
 #include "listopad/technology_log.h"
 #include "listopad/version.h"
@@ -307,6 +309,7 @@ bool EditorWindow::create(const int show_command) {
   LargeFileView::register_class(instance_);
   HexViewWindow::register_class(instance_);
   TechnologyLogView::register_class(instance_);
+  PerformanceLogView::register_class(instance_);
 
   WNDCLASSEXW type{sizeof(type)};
   type.hInstance = instance_; type.lpfnWndProc = window_proc; type.lpszClassName = kWindowClass;
@@ -1007,6 +1010,9 @@ void EditorWindow::apply_window_theme() {
       case ViewKind::TechnologyLog:
         TechnologyLogView::set_dark(tab.view, dark_);
         break;
+      case ViewKind::PerformanceLog:
+        PerformanceLogView::set_dark(tab.view, dark_);
+        break;
       case ViewKind::Text:
         configure_editor(tab);
         if (tab.map)
@@ -1160,6 +1166,8 @@ void EditorWindow::rebuild_menu() {
               tr(L"Карта документа", L"Document map"));
   AppendMenuW(view, MF_STRING, IDM_VIEW_TECHNOLOGY_LOG,
               tr(L"Технологический журнал", L"Technology log"));
+  AppendMenuW(view, MF_STRING, IDM_VIEW_PERFORMANCE_LOG,
+              tr(L"Системный монитор", L"Performance log"));
   AppendMenuW(view, MF_STRING, IDM_VIEW_HEX, L"Hex/ASCII");
   AppendMenuW(root, MF_POPUP, reinterpret_cast<UINT_PTR>(view),
               tr(L"&Вид", L"&View"));
@@ -1210,12 +1218,16 @@ void EditorWindow::refresh_view_menu_state() {
   set_checked(IDM_VIEW_HEX, tab && tab->view_kind == ViewKind::Hex);
   set_checked(IDM_VIEW_TECHNOLOGY_LOG,
               tab && tab->view_kind == ViewKind::TechnologyLog);
+  set_checked(IDM_VIEW_PERFORMANCE_LOG,
+              tab && tab->view_kind == ViewKind::PerformanceLog);
   const bool can_switch =
       tab && tab->document.has_path() && !tab->document.dirty &&
       !tab->document.external_diverged;
   set_enabled(IDM_VIEW_HEX, can_switch);
   set_enabled(IDM_VIEW_TECHNOLOGY_LOG,
               can_switch && tab->technology_log_candidate);
+  set_enabled(IDM_VIEW_PERFORMANCE_LOG,
+              can_switch && tab->performance_log_candidate);
   if (changed) DrawMenuBar(window_);
 }
 
@@ -2436,17 +2448,27 @@ bool EditorWindow::open_file(const std::filesystem::path& input, const Encoding*
     MessageBoxW(window_, (tr(L"Не удалось открыть файл:\n", L"Unable to open file:\n") + win32_error_message(loaded.error)).c_str(),
                 LISTOPAD_PRODUCT_NAME, MB_ICONERROR); return false;
   }
+  // A binary performance log is recognized before the binary prompt: PDH is
+  // the only reader that can tell whether the file really is one, so the
+  // extension opens the structured view and the worker reports the verdict.
+  const bool performance_log_candidate =
+      looks_like_performance_log_name(path) ||
+      (!loaded.document.likely_binary &&
+       (loaded.document.large_file
+            ? PerformanceLogView::looks_like(path)
+            : looks_like_performance_log_text(loaded.document.text)));
   const bool technology_log_candidate =
-      !loaded.document.likely_binary &&
+      !performance_log_candidate && !loaded.document.likely_binary &&
       (loaded.document.large_file
            ? TechnologyLogView::looks_like(path)
            : looks_like_technology_log(loaded.document.text));
-  ViewKind view_kind = technology_log_candidate
-                           ? ViewKind::TechnologyLog
-                           : (loaded.document.large_file
-                                  ? ViewKind::LargeText
-                                  : ViewKind::Text);
-  if (loaded.document.likely_binary) {
+  ViewKind view_kind =
+      performance_log_candidate  ? ViewKind::PerformanceLog
+      : technology_log_candidate ? ViewKind::TechnologyLog
+      : loaded.document.large_file
+          ? ViewKind::LargeText
+          : ViewKind::Text;
+  if (loaded.document.likely_binary && !performance_log_candidate) {
     const int answer = MessageBoxW(
         window_,
         tr(L"Файл похож на бинарный.\n"
@@ -2470,6 +2492,7 @@ bool EditorWindow::open_file(const std::filesystem::path& input, const Encoding*
   tab.document = std::move(loaded.document);
   tab.view_kind = view_kind;
   tab.technology_log_candidate = technology_log_candidate;
+  tab.performance_log_candidate = performance_log_candidate;
   tab_controller_.push_back(std::move(tab));
   Tab& added = tab_controller_.back();
   if (!create_tab_views(added)) {
@@ -2482,7 +2505,8 @@ bool EditorWindow::open_file(const std::filesystem::path& input, const Encoding*
     return false;
   }
   if (added.view_kind == ViewKind::Hex ||
-      added.view_kind == ViewKind::TechnologyLog) {
+      added.view_kind == ViewKind::TechnologyLog ||
+      added.view_kind == ViewKind::PerformanceLog) {
     added.document.text.clear();
   }
   TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = tab_controller_.back().document.title.data();
@@ -2718,6 +2742,10 @@ void EditorWindow::reload_active() {
       if (!TechnologyLogView::open(tab->view, tab->document.path)) return;
       tab->document.fingerprint = fingerprint_file(tab->document.path);
       break;
+    case ViewKind::PerformanceLog:
+      if (!PerformanceLogView::open(tab->view, tab->document.path)) return;
+      tab->document.fingerprint = fingerprint_file(tab->document.path);
+      break;
     case ViewKind::Text: {
       auto loaded = load_document(tab->document.path,
                                   settings_.large_file_threshold,
@@ -2774,7 +2802,8 @@ void EditorWindow::apply_search_visibility() {
   const bool editable_tab = tab && editable(*tab);
   const bool hex = tab && tab->view_kind == ViewKind::Hex;
   const bool technology_log =
-      tab && tab->view_kind == ViewKind::TechnologyLog;
+      tab && (tab->view_kind == ViewKind::TechnologyLog ||
+              tab->view_kind == ViewKind::PerformanceLog);
   if (ui_state.search_mode == SearchMode::Replace && !editable_tab) {
     ui_state.search_mode = SearchMode::Find;
   }
@@ -2823,6 +2852,9 @@ void EditorWindow::find_next() {
       return;
     case ViewKind::TechnologyLog:
       TechnologyLogView::find_next(tab->view, pattern, options, wrap);
+      return;
+    case ViewKind::PerformanceLog:
+      PerformanceLogView::find_next(tab->view, pattern, options, wrap);
       return;
     case ViewKind::Text:
       break;
@@ -3500,6 +3532,23 @@ void EditorWindow::update_ui() {
       SendMessageW(status_, SB_SETTEXTW, 2, pointer_param(L"—"));
       SendMessageW(status_, SB_SETTEXTW, 3, pointer_param(L"1С"));
       break;
+    case ViewKind::PerformanceLog: {
+      SendMessageW(
+          status_, SB_SETTEXTW, 0,
+          pointer_param(tr(L"Системный монитор · только чтение",
+                           L"Performance log · read-only")));
+      const std::wstring size =
+          std::to_wstring(tab->document.fingerprint.size) +
+          tr(L" байт", L" bytes");
+      SendMessageW(status_, SB_SETTEXTW, 1, pointer_param(size.c_str()));
+      SendMessageW(status_, SB_SETTEXTW, 2, pointer_param(L"—"));
+      SendMessageW(status_, SB_SETTEXTW, 3,
+                   pointer_param(looks_like_performance_log_name(
+                                     tab->document.path)
+                                     ? L"BLG"
+                                     : L"PDH-CSV"));
+      break;
+    }
     case ViewKind::Text: {
       update_position_status(*tab);
       SendMessageW(status_, SB_SETTEXTW, 1, pointer_param(encoding.c_str()));

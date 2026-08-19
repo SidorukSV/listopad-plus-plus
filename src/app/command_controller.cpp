@@ -1,6 +1,7 @@
 #include "command_controller.h"
 
 #include "editor_window.h"
+#include "performance_log_view.h"
 #include "resource.h"
 #include "technology_log_view.h"
 #include "listopad/settings.h"
@@ -86,6 +87,9 @@ bool CommandController::dispatch(EditorWindow& owner, const int command) const {
       if (tab && tab->view_kind ==
                      EditorWindow::ViewKind::TechnologyLog) {
         TechnologyLogView::copy(tab->view);
+      } else if (tab && tab->view_kind ==
+                            EditorWindow::ViewKind::PerformanceLog) {
+        PerformanceLogView::copy(tab->view);
       } else if (tab && owner.editable(*tab)) {
         sci(tab->view, SCI_COPY);
       }
@@ -97,6 +101,9 @@ bool CommandController::dispatch(EditorWindow& owner, const int command) const {
       if (tab && tab->view_kind ==
                      EditorWindow::ViewKind::TechnologyLog) {
         TechnologyLogView::select_all(tab->view);
+      } else if (tab && tab->view_kind ==
+                            EditorWindow::ViewKind::PerformanceLog) {
+        PerformanceLogView::select_all(tab->view);
       } else if (tab && owner.editable(*tab)) {
         sci(tab->view, SCI_SELECTALL);
       }
@@ -172,6 +179,28 @@ bool CommandController::dispatch(EditorWindow& owner, const int command) const {
             tab->view_kind == EditorWindow::ViewKind::TechnologyLog
                 ? EditorWindow::ViewKind::Text
                 : EditorWindow::ViewKind::TechnologyLog);
+      }
+      return true;
+    case IDM_VIEW_PERFORMANCE_LOG:
+      if (!tab || !tab->document.has_path() || tab->document.dirty ||
+          tab->document.external_diverged ||
+          !tab->performance_log_candidate) {
+        MessageBeep(MB_ICONINFORMATION);
+        MessageBoxW(
+            owner.window_,
+            owner.tr(
+                L"Представление системного монитора доступно только для "
+                L"распознанного журнала счётчиков без локальных или внешних "
+                L"изменений.",
+                L"The performance log view is available only for a recognized "
+                L"counter log without local or external changes."),
+            LISTOPAD_PRODUCT_NAME, MB_OK | MB_ICONINFORMATION);
+      } else {
+        owner.switch_tab_view(
+            *tab,
+            tab->view_kind == EditorWindow::ViewKind::PerformanceLog
+                ? EditorWindow::ViewKind::Text
+                : EditorWindow::ViewKind::PerformanceLog);
       }
       return true;
     case IDM_TOOLS_FORMAT:
