@@ -22,6 +22,19 @@ constexpr std::string_view kCsv =
     "\"08/13/2026 21:23:51.198\",\"20480\",\"0.5\",\"12.5\"\r\n"
     "\"08/13/2026 21:23:56.202\",\"100\",\"9.5\",\"37.5\"\r\n";
 
+// A compact slice of the local MonthClose BLG shape: SQL Server counters use
+// English object names with Russian counter names, plus process CPU instances.
+constexpr std::string_view kSqlCsv =
+    "\"(PDH-CSV 4.0) (Russia TZ 4 Standard Time)(-300)\","
+    "\"\\\\1C\\SQLServer:Buffer Manager\\Примерный срок хранения страницы\","
+    "\"\\\\1C\\SQLServer:Memory Manager\\Ожидается выделений памяти\","
+    "\"\\\\1C\\SQLServer:Databases(2stn_erp)\\Время записи журнала на диск (мс)\","
+    "\"\\\\1C\\SQLServer:Resource Pool Stats(default)\\Средняя продолжительность операции записи на диск, мс\","
+    "\"\\\\1C\\SQLServer:Wait Statistics(Average wait time (ms))\\Ожиданий записи в журнал\","
+    "\"\\\\1C\\Процесс(sqlservr)\\% загруженности процессора\"\r\n"
+    "\"08/19/2026 00:01:34.126\",\"219\",\"0\",\"2000\",\"134\",\"130\",\"48\"\r\n"
+    "\"08/19/2026 00:01:39.166\",\"1000\",\"4\",\"2200\",\"120\",\"140\",\"20\"\r\n";
+
 const PerformanceCounterSeries& series_at(
     const PerformanceLogDocument& document, const std::size_t index) {
   REQUIRE(document.counters.size() > index);
@@ -154,6 +167,48 @@ TEST_CASE("performance log filters select by object and by data") {
       process, PerformanceLogFilter::Deviations));
   CHECK(performance_counter_matches_filter(
       process, PerformanceLogFilter::WithValues));
+}
+
+TEST_CASE("performance log recognizes SQL Server month close counters") {
+  const PerformanceLogDocument document = parse_performance_log_text(kSqlCsv);
+  REQUIRE(document.counters.size() == 6);
+
+  const PerformanceCounterSeries& page_life = series_at(document, 0);
+  const PerformanceCounterSeries& memory_grants = series_at(document, 1);
+  const PerformanceCounterSeries& log_write = series_at(document, 2);
+  const PerformanceCounterSeries& pool_write = series_at(document, 3);
+  const PerformanceCounterSeries& wait_time = series_at(document, 4);
+  const PerformanceCounterSeries& process = series_at(document, 5);
+
+  CHECK(performance_counter_matches_filter(page_life,
+                                           PerformanceLogFilter::SqlServer));
+  CHECK(performance_counter_matches_filter(memory_grants,
+                                           PerformanceLogFilter::Memory));
+  CHECK(performance_counter_matches_filter(log_write,
+                                           PerformanceLogFilter::Disk));
+  CHECK(performance_counter_matches_filter(pool_write,
+                                           PerformanceLogFilter::Disk));
+  CHECK(performance_counter_matches_filter(process,
+                                           PerformanceLogFilter::Processes));
+  CHECK_FALSE(performance_counter_matches_filter(
+      page_life, PerformanceLogFilter::Processes));
+
+  const PerformanceLogInterpretation page_life_result =
+      interpret_performance_counter(page_life, true);
+  CHECK(page_life_result.kind == PerformanceLogInterpretationKind::Warning);
+  CHECK(page_life_result.summary ==
+        "Минимум 219 с — ниже порога 300 с");
+
+  CHECK(interpret_performance_counter(memory_grants, true).kind ==
+        PerformanceLogInterpretationKind::Warning);
+  CHECK(interpret_performance_counter(log_write, true).kind ==
+        PerformanceLogInterpretationKind::Error);
+  CHECK(interpret_performance_counter(pool_write, true).kind ==
+        PerformanceLogInterpretationKind::Error);
+  CHECK(interpret_performance_counter(wait_time, true).kind ==
+        PerformanceLogInterpretationKind::Error);
+  CHECK(performance_counter_matches_filter(wait_time,
+                                           PerformanceLogFilter::Deviations));
 }
 
 TEST_CASE("performance log parser observes a pre-requested stop") {

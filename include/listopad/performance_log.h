@@ -101,6 +101,8 @@ enum class PerformanceLogFilter {
   Processor,
   Memory,
   Disk,
+  SqlServer,
+  Processes,
 };
 
 struct PerformanceLogUiState {

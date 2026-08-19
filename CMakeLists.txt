@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.29)
-set(LISTOPAD_VERSION "0.3.0" CACHE STRING "Listopad++ semantic version")
+set(LISTOPAD_VERSION "0.3.1" CACHE STRING "Listopad++ semantic version")
 project(ListopadPP VERSION "${LISTOPAD_VERSION}" LANGUAGES C CXX RC)
 
 # Listopad++ does not use C++ modules. With MSVC/Ninja, the module-scanned

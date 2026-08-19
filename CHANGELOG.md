@@ -5,6 +5,24 @@
 
 ## [Не выпущено]
 
+## [0.3.1] — 2026-08-19
+
+Выпуск уточняет представление журналов системного монитора под реальные
+журналы закрытия месяца с наборами счётчиков 1С и SQL Server.
+
+### Добавлено
+
+- фильтры «SQL Server» и «Процессы» в представлении журналов системного
+  монитора;
+- пороговые оценки для счётчиков SQL Server Buffer Manager, Databases, Locks,
+  Memory Manager, Resource Pool Stats и Wait Statistics, встречающихся в
+  журналах закрытия месяца.
+
+### Изменено
+
+- фильтры памяти и диска теперь учитывают SQL Server-счётчики по имени
+  счётчика, а не только по объекту Windows Performance Monitor.
+
 ## [0.3.0] — 2026-08-14
 
 Выпуск структурированного read-only представления журналов системного
@@ -353,3 +371,5 @@
 [0.1.5]: https://github.com/SidorukSV/listopad-plus-plus/releases/tag/v0.1.5
 [0.1.6]: https://github.com/SidorukSV/listopad-plus-plus/releases/tag/v0.1.6
 [0.2.1]: https://github.com/SidorukSV/listopad-plus-plus/releases/tag/v0.2.1
+[0.3.0]: https://github.com/SidorukSV/listopad-plus-plus/releases/tag/v0.3.0
+[0.3.1]: https://github.com/SidorukSV/listopad-plus-plus/releases/tag/v0.3.1

@@ -31,7 +31,7 @@ constexpr int kFilterId = 2;
 constexpr int kCountersId = 3;
 constexpr int kSamplesToggleId = 4;
 constexpr int kSamplesId = 5;
-constexpr int kFilterCount = 6;
+constexpr int kFilterCount = 8;
 constexpr int kCounterColumns = 8;
 
 struct CreateOptions {
@@ -758,10 +758,12 @@ LRESULT CALLBACK PerformanceLogView::window_proc(const HWND window,
         state->russian
             ? std::array<const wchar_t*, kFilterCount>{
                   L"Все счётчики", L"Только с данными", L"С отклонениями",
-                  L"Процессор", L"Память", L"Диск"}
+                  L"Процессор", L"Память", L"Диск", L"SQL Server",
+                  L"Процессы"}
             : std::array<const wchar_t*, kFilterCount>{
                   L"All counters", L"With samples", L"Deviations",
-                  L"Processor", L"Memory", L"Disk"};
+                  L"Processor", L"Memory", L"Disk", L"SQL Server",
+                  L"Processes"};
     for (const wchar_t* filter : filters) {
       SendMessageW(state->filter, CB_ADDSTRING, 0,
                    reinterpret_cast<LPARAM>(filter));
@@ -868,7 +870,8 @@ LRESULT CALLBACK PerformanceLogView::window_proc(const HWND window,
           SendMessageW(state->filter, CB_GETCURSEL, 0, 0);
       state->ui.filter =
           selected >= 0 &&
-                  selected <= static_cast<LRESULT>(PerformanceLogFilter::Disk)
+                  selected <=
+                      static_cast<LRESULT>(PerformanceLogFilter::Processes)
               ? static_cast<PerformanceLogFilter>(selected)
               : PerformanceLogFilter::All;
       rebuild_visible(window, *state);

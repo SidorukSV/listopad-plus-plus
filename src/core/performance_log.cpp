@@ -56,6 +56,18 @@ bool contains_ascii_ci(const std::string_view haystack,
   return false;
 }
 
+bool equals_ascii_ci(const std::string_view left,
+                     const std::string_view right) noexcept {
+  if (left.size() != right.size()) return false;
+  for (std::size_t index = 0; index < left.size(); ++index) {
+    if (ascii_lower(static_cast<unsigned char>(left[index])) !=
+        ascii_lower(static_cast<unsigned char>(right[index]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool contains(const std::string_view haystack,
               const std::string_view needle) noexcept {
   return !needle.empty() &&
@@ -67,6 +79,12 @@ bool matches_either(const std::string_view value,
                     const std::string_view russian,
                     const std::string_view english) noexcept {
   return contains(value, russian) || contains_ascii_ci(value, english);
+}
+
+bool equals_either(const std::string_view value,
+                   const std::string_view russian,
+                   const std::string_view english) noexcept {
+  return value == russian || equals_ascii_ci(value, english);
 }
 
 std::string comma_decimal(std::string value, const bool russian) {
@@ -183,6 +201,8 @@ enum class Comparison { Above, Below };
 struct ThresholdRule {
   std::string_view object_russian;
   std::string_view object_english;
+  std::string_view instance_russian;
+  std::string_view instance_english;
   std::string_view counter_russian;
   std::string_view counter_english;
   Aggregate aggregate;
@@ -195,23 +215,57 @@ struct ThresholdRule {
 
 // Thresholds are the conventional Windows capacity-planning marks. They are
 // reported as measured aggregate against a named threshold, never as a cause.
-constexpr std::array<ThresholdRule, 8> kRules{{
-    {"роцессор", "Processor", "загруженности процессора", "% Processor Time",
+constexpr std::array<ThresholdRule, 18> kRules{{
+    {"роцессор", "Processor", "", "", "загруженности процессора",
+     "% Processor Time",
      Aggregate::Average, Comparison::Above, 90.0, 95.0, "%", "%"},
-    {"истема", "System", "Очередь процессора", "Processor Queue Length",
+    {"истема", "System", "", "", "Очередь процессора",
+     "Processor Queue Length",
      Aggregate::Average, Comparison::Above, 10.0, 20.0, "", ""},
-    {"", "", "Доступно МБ", "Available MBytes", Aggregate::Minimum,
+    {"", "", "", "", "Доступно МБ", "Available MBytes", Aggregate::Minimum,
      Comparison::Below, 512.0, 128.0, "МБ", "MB"},
-    {"", "", "использования выделенной памяти", "% Committed Bytes In Use",
-     Aggregate::Average, Comparison::Above, 90.0, 95.0, "%", "%"},
-    {"", "", "Средняя длина очереди диска", "Avg. Disk Queue Length",
-     Aggregate::Average, Comparison::Above, 2.0, 8.0, "", ""},
-    {"диск", "Disk", "Среднее время", "Avg. Disk sec/", Aggregate::Average,
-     Comparison::Above, 0.02, 0.05, "с", "s"},
-    {"Файл подкачки", "Paging File", "использования", "% Usage",
+    {"", "", "", "", "использования выделенной памяти",
+     "% Committed Bytes In Use", Aggregate::Average, Comparison::Above, 90.0,
+     95.0, "%", "%"},
+    {"", "", "", "", "Средняя длина очереди диска",
+     "Avg. Disk Queue Length", Aggregate::Average, Comparison::Above, 2.0,
+     8.0, "", ""},
+    {"диск", "Disk", "", "", "Среднее время", "Avg. Disk sec/",
+     Aggregate::Average, Comparison::Above, 0.02, 0.05, "с", "s"},
+    {"Файл подкачки", "Paging File", "", "", "использования", "% Usage",
      Aggregate::Maximum, Comparison::Above, 80.0, 95.0, "%", "%"},
-    {"", "", "Обмен страниц в секунду", "Pages/sec", Aggregate::Average,
-     Comparison::Above, 1000.0, 5000.0, "", ""},
+    {"", "", "", "", "Обмен страниц в секунду", "Pages/sec",
+     Aggregate::Average, Comparison::Above, 1000.0, 5000.0, "", ""},
+    {"SQLServer:Buffer Manager", "SQLServer:Buffer Manager", "", "",
+     "Коэффициент обращений к буферному кэшу", "Buffer cache hit ratio",
+     Aggregate::Minimum, Comparison::Below, 90.0, 80.0, "%", "%"},
+    {"SQLServer:Buffer Manager", "SQLServer:Buffer Manager", "", "",
+     "Примерный срок хранения страницы", "Page life expectancy",
+     Aggregate::Minimum, Comparison::Below, 300.0, 120.0, "с", "s"},
+    {"SQLServer:Buffer Manager", "SQLServer:Buffer Manager", "", "",
+     "Остановов свободного списка", "Free list stalls",
+     Aggregate::Average, Comparison::Above, 2.0, 10.0, "", ""},
+    {"SQLServer:Databases", "SQLServer:Databases", "", "",
+     "Время записи журнала на диск", "Log Flush Write Time",
+     Aggregate::Average, Comparison::Above, 20.0, 100.0, "мс", "ms"},
+    {"SQLServer:Databases", "SQLServer:Databases", "", "",
+     "Время ожидания сброса журнала", "Log Flush Wait Time",
+     Aggregate::Average, Comparison::Above, 20.0, 100.0, "мс", "ms"},
+    {"SQLServer:Databases", "SQLServer:Databases", "", "",
+     "Ожиданий сброса журнала", "Log Flush Waits",
+     Aggregate::Average, Comparison::Above, 1.0, 10.0, "", ""},
+    {"SQLServer:Locks", "SQLServer:Locks", "", "",
+     "Количество взаимоблокировок", "Number of Deadlocks",
+     Aggregate::Maximum, Comparison::Above, 0.0, 1.0, "", ""},
+    {"SQLServer:Memory Manager", "SQLServer:Memory Manager", "", "",
+     "Ожидается выделений памяти", "Memory Grants Pending",
+     Aggregate::Maximum, Comparison::Above, 0.0, 5.0, "", ""},
+    {"SQLServer:Resource Pool Stats", "SQLServer:Resource Pool Stats", "",
+     "", "Средняя продолжительность операции", "Avg Disk",
+     Aggregate::Average, Comparison::Above, 20.0, 100.0, "мс", "ms"},
+    {"SQLServer:Wait Statistics", "SQLServer:Wait Statistics",
+     "Average wait time", "Average wait time", "Ожиданий", "wait",
+     Aggregate::Average, Comparison::Above, 20.0, 100.0, "мс", "ms"},
 }};
 
 const ThresholdRule* find_rule(const PerformanceCounterPath& path) noexcept {
@@ -219,6 +273,11 @@ const ThresholdRule* find_rule(const PerformanceCounterPath& path) noexcept {
     if (!rule.object_russian.empty() &&
         !matches_either(path.object, rule.object_russian,
                         rule.object_english)) {
+      continue;
+    }
+    if (!rule.instance_russian.empty() &&
+        !matches_either(path.instance, rule.instance_russian,
+                        rule.instance_english)) {
       continue;
     }
     if (!matches_either(path.counter, rule.counter_russian,
@@ -660,11 +719,17 @@ bool performance_counter_matches_filter(
     case PerformanceLogFilter::Memory:
       return matches_either(series.path.object, "амять", "Memory") ||
              matches_either(series.path.object, "Файл подкачки",
-                            "Paging File") ||
+                             "Paging File") ||
              matches_either(series.path.counter, "Рабочее множество",
-                            "Working Set");
+                            "Working Set") ||
+             matches_either(series.path.counter, "амят", "memory");
     case PerformanceLogFilter::Disk:
-      return matches_either(series.path.object, "диск", "Disk");
+      return matches_either(series.path.object, "диск", "Disk") ||
+             matches_either(series.path.counter, "диск", "Disk");
+    case PerformanceLogFilter::SqlServer:
+      return contains_ascii_ci(series.path.object, "SQLServer:");
+    case PerformanceLogFilter::Processes:
+      return equals_either(series.path.object, "Процесс", "Process");
   }
   return true;
 }
