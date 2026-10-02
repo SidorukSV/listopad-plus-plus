@@ -5,6 +5,17 @@
 
 ## [Не выпущено]
 
+## [0.3.2] — 2026-10-02
+
+Выпуск добавляет подсветку исходных файлов Go.
+
+### Добавлено
+
+- автоматическое распознавание `.go` и `.GO` как языка Go, фильтр Go в диалоге
+  сохранения и автодобавление расширения `.go` для новых файлов;
+- подсветка ключевых слов, встроенных типов и функций Go поверх штатного
+  C-подобного лексера Lexilla, включая комментарии, числа, строки и raw strings.
+
 ## [0.3.1] — 2026-08-19
 
 Выпуск уточняет представление журналов системного монитора под реальные
@@ -373,3 +384,4 @@
 [0.2.1]: https://github.com/SidorukSV/listopad-plus-plus/releases/tag/v0.2.1
 [0.3.0]: https://github.com/SidorukSV/listopad-plus-plus/releases/tag/v0.3.0
 [0.3.1]: https://github.com/SidorukSV/listopad-plus-plus/releases/tag/v0.3.1
+[0.3.2]: https://github.com/SidorukSV/listopad-plus-plus/releases/tag/v0.3.2

@@ -9,7 +9,7 @@
 namespace listopad {
 namespace {
 
-const std::array<LanguageInfo, 24> kLanguages{{
+const std::array<LanguageInfo, 25> kLanguages{{
     {"text", "null", "Plain text", false, false, ".txt", {".txt", ".log"}},
     {"cpp", "cpp", "C / C++", false, false, ".cpp",
      {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"}},
@@ -23,6 +23,7 @@ const std::array<LanguageInfo, 24> kLanguages{{
     {"typescript", "cpp", "TypeScript", false, false, ".ts", {".ts"}},
     {"tsx", "hypertext", "TypeScript JSX", true, false, ".tsx", {".tsx"}},
     {"json", "json", "JSON", false, false, ".json", {".json", ".jsonc"}},
+    {"go", "cpp", "Go", false, false, ".go", {".go"}},
     {"python", "python", "Python", false, false, ".py", {".py", ".pyw"}},
     {"rust", "rust", "Rust", false, false, ".rs", {".rs"}},
     {"sql", "sql", "SQL", false, false, ".sql", {".sql"}},

@@ -2320,6 +2320,13 @@ void EditorWindow::apply_language(Tab& tab, const std::string_view language) {
       "as async await break case catch class const continue debugger default delete do else export extends "
       "false finally for from function get if import in instanceof let new null of return set static super "
       "switch this throw true try typeof undefined var void while with yield";
+  static constexpr char go_keywords[] =
+      "break case chan const continue default defer else fallthrough for func go goto if import interface "
+      "map package range return select struct switch type var";
+  static constexpr char go_builtins[] =
+      "any append bool byte cap clear close comparable complex complex64 complex128 copy delete error false "
+      "float32 float64 imag int int8 int16 int32 int64 iota len make max min nil new panic print println "
+      "real recover rune string true uint uint8 uint16 uint32 uint64 uintptr";
   static constexpr char bsl_keywords[] =
       "break continue do each else elseif elsif enddo endfunction endif endprocedure endtry except export false "
       "for function goto if in new not null procedure raise return then to true try undefined val var while "
@@ -2377,6 +2384,22 @@ void EditorWindow::apply_language(Tab& tab, const std::string_view language) {
     sci(tab.view, SCI_SETKEYWORDS, 0, pointer_param(bsl_keywords));
     sci(tab.view, SCI_SETKEYWORDS, 1, pointer_param(bsl_types));
     sci(tab.view, SCI_SETKEYWORDS, 2, pointer_param(bsl_functions));
+  } else if (tab.document.language == "go") {
+    set_fore(SCE_C_COMMENT, comment);
+    set_fore(SCE_C_COMMENTLINE, comment);
+    set_fore(SCE_C_COMMENTDOC, comment);
+    set_fore(SCE_C_NUMBER, number);
+    set_fore(SCE_C_WORD, keyword, true);
+    set_fore(SCE_C_WORD2, type);
+    set_fore(SCE_C_STRING, string);
+    set_fore(SCE_C_CHARACTER, string);
+    set_fore(SCE_C_STRINGEOL, error);
+    set_fore(SCE_C_OPERATOR, normal);
+    set_fore(SCE_C_IDENTIFIER, normal);
+    set_fore(SCE_C_STRINGRAW, string);
+    set_fore(SCE_C_ESCAPESEQUENCE, string);
+    sci(tab.view, SCI_SETKEYWORDS, 0, pointer_param(go_keywords));
+    sci(tab.view, SCI_SETKEYWORDS, 1, pointer_param(go_builtins));
   } else {
     set_fore(1, comment); set_fore(2, comment);
     set_fore(3, number); set_fore(4, keyword);

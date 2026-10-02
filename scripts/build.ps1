@@ -2,7 +2,7 @@
 param(
   [ValidateSet('debug', 'release', 'asan')][string]$Preset = 'release',
   [string]$VcpkgRoot = (Join-Path $PSScriptRoot '..\.deps\vcpkg'),
-  [string]$Version = '0.3.1',
+  [string]$Version = '0.3.2',
   [switch]$SkipTests
 )
 

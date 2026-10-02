@@ -36,6 +36,26 @@ TEST_CASE("window layout is derived from explicit UI state") {
   CHECK(replace_layout.replace_text.height == 24);
 }
 
+TEST_CASE("search results shrink before editor area disappears") {
+  const WindowLayoutInput input{
+      .client_width = 632,
+      .client_height = 424,
+      .status_height = 24,
+      .toolbar_height = 32,
+      .dpi = 96,
+  };
+  const UiState replace_with_results{
+      .search_mode = SearchMode::Replace,
+      .search_results_visible = true,
+  };
+
+  const auto layout = calculate_window_layout(input, replace_with_results);
+
+  CHECK(layout.tabs.height == 96);
+  CHECK(layout.search_panel.height == 272);
+  CHECK(layout.search_results.height == 152);
+}
+
 TEST_CASE("editor pane layout preserves a usable editor beside the map") {
   const LayoutRect content{7, 31, 1000, 700};
   const auto normal = calculate_editor_pane_layout(content, true, 96);
