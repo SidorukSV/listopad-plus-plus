@@ -6,6 +6,8 @@ TEST_CASE("language detection uses extension and shebang") {
   CHECK(listopad::detect_language(L"index.HTML").id == "html");
   CHECK(listopad::detect_language(L"script", "#!/usr/bin/env python3").id == "python");
   CHECK(listopad::detect_language(L"data.json").lexer == "json");
+  CHECK(listopad::detect_language(L"main.go").id == "go");
+  CHECK(listopad::detect_language(L"MAIN.GO").id == "go");
   CHECK(listopad::detect_language(L"ОбщийМодуль.bsl").id == "bsl");
   CHECK(listopad::detect_language(L"script.os").id == "onescript");
   CHECK(listopad::detect_language(L"script", "#!/usr/bin/env oscript").id == "onescript");
@@ -40,6 +42,8 @@ TEST_CASE("default extension is appended only when the name has no explicit suff
         std::filesystem::path(L"new-file.json"));
   CHECK(listopad::append_default_extension(L"new-file.custom", "json") ==
         std::filesystem::path(L"new-file.custom"));
+  CHECK(listopad::append_default_extension(L"main", "go") ==
+        std::filesystem::path(L"main.go"));
   CHECK(listopad::append_default_extension(L".gitignore", "text") ==
         std::filesystem::path(L".gitignore"));
   CHECK(listopad::append_default_extension(L"new-file", "raw-lexer") ==

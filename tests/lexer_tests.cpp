@@ -2,6 +2,7 @@
 #include "support/lexer_test_document.h"
 
 #include <ILexer.h>
+#include <Lexilla.h>
 #include <SciLexer.h>
 #include <Scintilla.h>
 
@@ -187,6 +188,28 @@ TEST_CASE("HTML lexer keeps markup, embedded CSS, and JavaScript styles separate
   CHECK(document.style_at("const") == SCE_HJ_KEYWORD);
   CHECK(document.styling_position() == document.Length());
   lexer->Release();
+}
+
+TEST_CASE("Go syntax uses C-like lexer styles with Go keyword lists") {
+  TestDocument document(
+      "package main\n\n"
+      "// start server\n"
+      "func main() {\n"
+      "  var count int = 42\n"
+      "  println(\"ready\", count)\n"
+      "}\n");
+  LexerPtr lexer(CreateLexer("cpp"));
+  REQUIRE(lexer);
+  lexer->WordListSet(0, "func package var");
+  lexer->WordListSet(1, "int println");
+  lexer->Lex(0, document.Length(), SCE_C_DEFAULT, &document);
+
+  CHECK(document.style_at("package") == SCE_C_WORD);
+  CHECK(document.style_at("// start server") == SCE_C_COMMENTLINE);
+  CHECK(document.style_at("func") == SCE_C_WORD);
+  CHECK(document.style_at("int") == SCE_C_WORD2);
+  CHECK(document.style_at("42") == SCE_C_NUMBER);
+  CHECK(document.style_at("\"ready\"") == SCE_C_STRING);
 }
 
 TEST_CASE("HTML lexer recovers when incremental styling starts inside a tag") {

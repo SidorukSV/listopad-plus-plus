@@ -29,12 +29,20 @@ WindowLayout calculate_window_layout(const WindowLayoutInput& input,
   const bool search_visible = state.search_mode != SearchMode::Hidden;
   const bool replace_visible = state.search_mode == SearchMode::Replace;
   const int search_controls_height = replace_visible ? 112 : 78;
-  const int search_height =
-      search_visible
-          ? search_controls_height +
-                (state.search_results_visible ? 168 : 0)
-          : 0;
   const int top_offset = toolbar_height + banner_height;
+  const int available_height =
+      std::max(0, height - status_height - top_offset);
+  const int minimum_tabs_height = scale_for_dpi(96, input.dpi);
+  const int max_search_results_height =
+      std::max(0, available_height - minimum_tabs_height -
+                      search_controls_height);
+  const int search_results_height =
+      state.search_results_visible
+          ? std::min(scale_for_dpi(168, input.dpi),
+                     max_search_results_height)
+          : 0;
+  const int search_height =
+      search_visible ? search_controls_height + search_results_height : 0;
   const int tabs_height =
       std::max(0, height - status_height - top_offset - search_height);
   const int search_top = height - status_height - search_height;
