@@ -98,6 +98,7 @@ add_library(listopad_core STATIC
   src/core/hex_view.cpp
   src/core/ipc_protocol.cpp
   src/core/language.cpp
+  src/core/pff_profile.cpp
   src/core/performance_log.cpp
   src/core/performance_log_binary.cpp
   src/core/search.cpp
@@ -132,6 +133,8 @@ add_executable(ListopadPP WIN32
   src/app/file_watcher.cpp
   src/app/hex_view_window.cpp
   src/app/large_file_view.cpp
+  src/app/pff_profile_controller.cpp
+  src/app/pff_profile_view.cpp
   src/app/performance_log_controller.cpp
   src/app/performance_log_view.cpp
   src/app/recovery_controller.cpp
@@ -190,6 +193,7 @@ if(LISTOPAD_BUILD_TESTS)
     tests/ipc_tests.cpp
     tests/language_tests.cpp
     tests/lexer_tests.cpp
+    tests/pff_profile_tests.cpp
     tests/performance_log_tests.cpp
     tests/recovery_controller_tests.cpp
     tests/search_tests.cpp

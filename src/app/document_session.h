@@ -2,6 +2,7 @@
 
 #include "listopad/document.h"
 #include "listopad/emmet_engine.h"
+#include "listopad/pff_profile.h"
 #include "listopad/performance_log.h"
 #include "listopad/technology_log.h"
 
@@ -21,6 +22,7 @@ enum class DocumentViewKind {
   Hex,
   TechnologyLog,
   PerformanceLog,
+  PffProfile,
 };
 
 struct EditorSurface {
@@ -40,6 +42,8 @@ class DocumentSession final {
   TechnologyLogUiState technology_log_ui;
   bool performance_log_candidate{false};
   PerformanceLogUiState performance_log_ui;
+  bool pff_profile_candidate{false};
+  PffProfileUiState pff_profile_ui;
   std::uint64_t edit_generation{0};
   std::uint64_t queued_recovery_generation{0};
   std::uint64_t first_unsaved_edit_tick{0};

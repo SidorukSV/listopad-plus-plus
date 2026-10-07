@@ -4,6 +4,7 @@
 #include "editor_window.h"
 #include "hex_view_window.h"
 #include "large_file_view.h"
+#include "pff_profile_view.h"
 #include "performance_log_view.h"
 #include "resource.h"
 #include "technology_log_view.h"
@@ -29,6 +30,9 @@ void DocumentViewController::destroy(EditorWindow&, DocumentSession& session) co
       session.view_kind == DocumentViewKind::PerformanceLog) {
     session.performance_log_ui =
         PerformanceLogView::ui_state(session.view);
+  }
+  if (session.view && session.view_kind == DocumentViewKind::PffProfile) {
+    session.pff_profile_ui = PffProfileView::ui_state(session.view);
   }
   if (session.map) {
     DestroyWindow(session.map);
@@ -117,6 +121,18 @@ bool DocumentViewController::create(EditorWindow& owner,
         return false;
       }
       return true;
+    case DocumentViewKind::PffProfile:
+      session.view = PffProfileView::create(
+          owner.window_, IDC_EDITOR, owner.russian(), session.pff_profile_ui);
+      if (!session.view) return false;
+      SendMessageW(session.view, WM_SETFONT,
+                   reinterpret_cast<WPARAM>(owner.editor_font_), TRUE);
+      PffProfileView::set_dark(session.view, owner.dark_);
+      if (!PffProfileView::open(session.view, session.document.path)) {
+        destroy(owner, session);
+        return false;
+      }
+      return true;
   }
   return false;
 }
@@ -134,6 +150,7 @@ bool DocumentViewController::switch_to(
   if (requested == DocumentViewKind::Text &&
       (session.view_kind == DocumentViewKind::TechnologyLog ||
        session.view_kind == DocumentViewKind::PerformanceLog ||
+       session.view_kind == DocumentViewKind::PffProfile ||
        (session.view_kind == DocumentViewKind::Hex &&
         !session.has_preserved_text_surface()))) {
     const Encoding* forced =
@@ -236,6 +253,9 @@ bool DocumentViewController::switch_to(
     session.performance_log_ui =
         PerformanceLogView::ui_state(previous_view);
   }
+  if (previous_kind == DocumentViewKind::PffProfile && previous_view) {
+    session.pff_profile_ui = PffProfileView::ui_state(previous_view);
+  }
   std::optional<Document> previous_document;
   if (replacement) {
     previous_document = std::move(session.document);
@@ -262,6 +282,7 @@ bool DocumentViewController::switch_to(
   if (previous_view) DestroyWindow(previous_view);
   if (target == DocumentViewKind::TechnologyLog ||
       target == DocumentViewKind::PerformanceLog ||
+      target == DocumentViewKind::PffProfile ||
       target == DocumentViewKind::Hex) {
     session.document.text.clear();
   }

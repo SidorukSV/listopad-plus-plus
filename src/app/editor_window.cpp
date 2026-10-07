@@ -3,6 +3,7 @@
 #include "document_map.h"
 #include "hex_view_window.h"
 #include "large_file_view.h"
+#include "pff_profile_view.h"
 #include "performance_log_view.h"
 #include "recovery_dialog.h"
 #include "resource.h"
@@ -12,6 +13,7 @@
 #include "listopad/formatter.h"
 #include "listopad/language.h"
 #include "listopad/lexers.h"
+#include "listopad/pff_profile.h"
 #include "listopad/search.h"
 #include "listopad/shell_registration.h"
 #include "listopad/performance_log.h"
@@ -310,6 +312,7 @@ bool EditorWindow::create(const int show_command) {
   HexViewWindow::register_class(instance_);
   TechnologyLogView::register_class(instance_);
   PerformanceLogView::register_class(instance_);
+  PffProfileView::register_class(instance_);
 
   WNDCLASSEXW type{sizeof(type)};
   type.hInstance = instance_; type.lpfnWndProc = window_proc; type.lpszClassName = kWindowClass;
@@ -1013,6 +1016,9 @@ void EditorWindow::apply_window_theme() {
       case ViewKind::PerformanceLog:
         PerformanceLogView::set_dark(tab.view, dark_);
         break;
+      case ViewKind::PffProfile:
+        PffProfileView::set_dark(tab.view, dark_);
+        break;
       case ViewKind::Text:
         configure_editor(tab);
         if (tab.map)
@@ -1168,6 +1174,8 @@ void EditorWindow::rebuild_menu() {
               tr(L"Технологический журнал", L"Technology log"));
   AppendMenuW(view, MF_STRING, IDM_VIEW_PERFORMANCE_LOG,
               tr(L"Системный монитор", L"Performance log"));
+  AppendMenuW(view, MF_STRING, IDM_VIEW_PFF_PROFILE,
+              tr(L"Замер производительности 1С", L"1C performance profile"));
   AppendMenuW(view, MF_STRING, IDM_VIEW_HEX, L"Hex/ASCII");
   AppendMenuW(root, MF_POPUP, reinterpret_cast<UINT_PTR>(view),
               tr(L"&Вид", L"&View"));
@@ -1220,6 +1228,8 @@ void EditorWindow::refresh_view_menu_state() {
               tab && tab->view_kind == ViewKind::TechnologyLog);
   set_checked(IDM_VIEW_PERFORMANCE_LOG,
               tab && tab->view_kind == ViewKind::PerformanceLog);
+  set_checked(IDM_VIEW_PFF_PROFILE,
+              tab && tab->view_kind == ViewKind::PffProfile);
   const bool can_switch =
       tab && tab->document.has_path() && !tab->document.dirty &&
       !tab->document.external_diverged;
@@ -1228,6 +1238,8 @@ void EditorWindow::refresh_view_menu_state() {
               can_switch && tab->technology_log_candidate);
   set_enabled(IDM_VIEW_PERFORMANCE_LOG,
               can_switch && tab->performance_log_candidate);
+  set_enabled(IDM_VIEW_PFF_PROFILE,
+              can_switch && tab->pff_profile_candidate);
   if (changed) DrawMenuBar(window_);
 }
 
@@ -2480,13 +2492,20 @@ bool EditorWindow::open_file(const std::filesystem::path& input, const Encoding*
        (loaded.document.large_file
             ? PerformanceLogView::looks_like(path)
             : looks_like_performance_log_text(loaded.document.text)));
-  const bool technology_log_candidate =
+  const bool pff_profile_candidate =
       !performance_log_candidate && !loaded.document.likely_binary &&
+      (loaded.document.large_file
+           ? PffProfileView::looks_like(path)
+           : looks_like_pff_profile(loaded.document.text));
+  const bool technology_log_candidate =
+      !performance_log_candidate && !pff_profile_candidate &&
+      !loaded.document.likely_binary &&
       (loaded.document.large_file
            ? TechnologyLogView::looks_like(path)
            : looks_like_technology_log(loaded.document.text));
   ViewKind view_kind =
       performance_log_candidate  ? ViewKind::PerformanceLog
+      : pff_profile_candidate    ? ViewKind::PffProfile
       : technology_log_candidate ? ViewKind::TechnologyLog
       : loaded.document.large_file
           ? ViewKind::LargeText
@@ -2516,6 +2535,7 @@ bool EditorWindow::open_file(const std::filesystem::path& input, const Encoding*
   tab.view_kind = view_kind;
   tab.technology_log_candidate = technology_log_candidate;
   tab.performance_log_candidate = performance_log_candidate;
+  tab.pff_profile_candidate = pff_profile_candidate;
   tab_controller_.push_back(std::move(tab));
   Tab& added = tab_controller_.back();
   if (!create_tab_views(added)) {
@@ -2529,7 +2549,8 @@ bool EditorWindow::open_file(const std::filesystem::path& input, const Encoding*
   }
   if (added.view_kind == ViewKind::Hex ||
       added.view_kind == ViewKind::TechnologyLog ||
-      added.view_kind == ViewKind::PerformanceLog) {
+      added.view_kind == ViewKind::PerformanceLog ||
+      added.view_kind == ViewKind::PffProfile) {
     added.document.text.clear();
   }
   TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = tab_controller_.back().document.title.data();
@@ -2769,6 +2790,10 @@ void EditorWindow::reload_active() {
       if (!PerformanceLogView::open(tab->view, tab->document.path)) return;
       tab->document.fingerprint = fingerprint_file(tab->document.path);
       break;
+    case ViewKind::PffProfile:
+      if (!PffProfileView::open(tab->view, tab->document.path)) return;
+      tab->document.fingerprint = fingerprint_file(tab->document.path);
+      break;
     case ViewKind::Text: {
       auto loaded = load_document(tab->document.path,
                                   settings_.large_file_threshold,
@@ -2824,9 +2849,10 @@ void EditorWindow::apply_search_visibility() {
   const bool visible = ui_state.search_mode != SearchMode::Hidden;
   const bool editable_tab = tab && editable(*tab);
   const bool hex = tab && tab->view_kind == ViewKind::Hex;
-  const bool technology_log =
+  const bool structured_read_only =
       tab && (tab->view_kind == ViewKind::TechnologyLog ||
-              tab->view_kind == ViewKind::PerformanceLog);
+              tab->view_kind == ViewKind::PerformanceLog ||
+              tab->view_kind == ViewKind::PffProfile);
   if (ui_state.search_mode == SearchMode::Replace && !editable_tab) {
     ui_state.search_mode = SearchMode::Find;
   }
@@ -2842,11 +2868,11 @@ void EditorWindow::apply_search_visibility() {
   ShowWindow(regex_check_, visible && !hex ? SW_SHOW : SW_HIDE);
   ShowWindow(case_check_, visible ? SW_SHOW : SW_HIDE);
   ShowWindow(all_tabs_check_,
-             visible && !hex && !technology_log ? SW_SHOW : SW_HIDE);
+             visible && !hex && !structured_read_only ? SW_SHOW : SW_HIDE);
   ShowWindow(whole_word_check_, visible && !hex ? SW_SHOW : SW_HIDE);
   ShowWindow(wrap_check_, visible ? SW_SHOW : SW_HIDE);
   ShowWindow(selection_only_check_,
-             visible && !hex && !technology_log ? SW_SHOW : SW_HIDE);
+             visible && !hex && !structured_read_only ? SW_SHOW : SW_HIDE);
   ShowWindow(replace_text_, replace_visible ? SW_SHOW : SW_HIDE);
   ShowWindow(replace_button_, replace_visible ? SW_SHOW : SW_HIDE);
   ShowWindow(replace_all_button_, replace_visible ? SW_SHOW : SW_HIDE);
@@ -2878,6 +2904,9 @@ void EditorWindow::find_next() {
       return;
     case ViewKind::PerformanceLog:
       PerformanceLogView::find_next(tab->view, pattern, options, wrap);
+      return;
+    case ViewKind::PffProfile:
+      PffProfileView::find_next(tab->view, pattern, options, wrap);
       return;
     case ViewKind::Text:
       break;
@@ -3572,6 +3601,16 @@ void EditorWindow::update_ui() {
                                      : L"PDH-CSV"));
       break;
     }
+    case ViewKind::PffProfile:
+      SendMessageW(
+          status_, SB_SETTEXTW, 0,
+          pointer_param(tr(L"Замер производительности 1С · только чтение",
+                           L"1C performance profile · read-only")));
+      SendMessageW(status_, SB_SETTEXTW, 1,
+                   pointer_param(encoding.c_str()));
+      SendMessageW(status_, SB_SETTEXTW, 2, pointer_param(L"—"));
+      SendMessageW(status_, SB_SETTEXTW, 3, pointer_param(L"PFF"));
+      break;
     case ViewKind::Text: {
       update_position_status(*tab);
       SendMessageW(status_, SB_SETTEXTW, 1, pointer_param(encoding.c_str()));
@@ -3610,8 +3649,11 @@ std::filesystem::path EditorWindow::choose_open_file() {
   std::wstring buffer(32768, L'\0');
   OPENFILENAMEW dialog{sizeof(dialog)}; dialog.hwndOwner = window_; dialog.lpstrFile = buffer.data();
   dialog.nMaxFile = static_cast<DWORD>(buffer.size());
-  dialog.lpstrFilter = tr(L"Все файлы\0*.*\0Текстовые файлы\0*.txt;*.log;*.json;*.xml;*.html\0\0",
-                          L"All files\0*.*\0Text files\0*.txt;*.log;*.json;*.xml;*.html\0\0");
+  dialog.lpstrFilter = tr(
+      L"Все файлы\0*.*\0Замеры производительности 1С\0*.pff\0"
+      L"Текстовые файлы\0*.txt;*.log;*.json;*.xml;*.html\0\0",
+      L"All files\0*.*\01C performance measurements\0*.pff\0"
+      L"Text files\0*.txt;*.log;*.json;*.xml;*.html\0\0");
   dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
   return GetOpenFileNameW(&dialog) ? std::filesystem::path(buffer.data()) : std::filesystem::path{};
 }
