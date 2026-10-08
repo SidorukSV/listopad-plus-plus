@@ -1,6 +1,7 @@
 #include "command_controller.h"
 
 #include "editor_window.h"
+#include "pff_profile_view.h"
 #include "performance_log_view.h"
 #include "resource.h"
 #include "technology_log_view.h"
@@ -90,6 +91,9 @@ bool CommandController::dispatch(EditorWindow& owner, const int command) const {
       } else if (tab && tab->view_kind ==
                             EditorWindow::ViewKind::PerformanceLog) {
         PerformanceLogView::copy(tab->view);
+      } else if (tab && tab->view_kind ==
+                            EditorWindow::ViewKind::PffProfile) {
+        PffProfileView::copy(tab->view);
       } else if (tab && owner.editable(*tab)) {
         sci(tab->view, SCI_COPY);
       }
@@ -104,6 +108,9 @@ bool CommandController::dispatch(EditorWindow& owner, const int command) const {
       } else if (tab && tab->view_kind ==
                             EditorWindow::ViewKind::PerformanceLog) {
         PerformanceLogView::select_all(tab->view);
+      } else if (tab && tab->view_kind ==
+                            EditorWindow::ViewKind::PffProfile) {
+        PffProfileView::select_all(tab->view);
       } else if (tab && owner.editable(*tab)) {
         sci(tab->view, SCI_SELECTALL);
       }
@@ -201,6 +208,26 @@ bool CommandController::dispatch(EditorWindow& owner, const int command) const {
             tab->view_kind == EditorWindow::ViewKind::PerformanceLog
                 ? EditorWindow::ViewKind::Text
                 : EditorWindow::ViewKind::PerformanceLog);
+      }
+      return true;
+    case IDM_VIEW_PFF_PROFILE:
+      if (!tab || !tab->document.has_path() || tab->document.dirty ||
+          tab->document.external_diverged || !tab->pff_profile_candidate) {
+        MessageBeep(MB_ICONINFORMATION);
+        MessageBoxW(
+            owner.window_,
+            owner.tr(
+                L"Представление замера производительности 1С доступно "
+                L"только для распознанного PFF-файла без локальных или "
+                L"внешних изменений.",
+                L"The 1C performance profile view is available only for a "
+                L"recognized PFF file without local or external changes."),
+            LISTOPAD_PRODUCT_NAME, MB_OK | MB_ICONINFORMATION);
+      } else {
+        owner.switch_tab_view(
+            *tab, tab->view_kind == EditorWindow::ViewKind::PffProfile
+                      ? EditorWindow::ViewKind::Text
+                      : EditorWindow::ViewKind::PffProfile);
       }
       return true;
     case IDM_TOOLS_FORMAT:

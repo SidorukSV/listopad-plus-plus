@@ -180,6 +180,7 @@ $IDM_TOOLS_SETTINGS = 1304
 $IDM_VIEW_HEX = 1403
 $IDM_VIEW_TECHNOLOGY_LOG = 1404
 $IDM_VIEW_PERFORMANCE_LOG = 1405
+$IDM_VIEW_PFF_PROFILE = 1406
 $IDM_HELP_ABOUT = 1501
 $IDC_EDITOR = 2002
 $IDC_TAB = 2001
@@ -562,12 +563,16 @@ $technologyLogDirectory = Join-Path (
 $technologyLogPath = Join-Path $technologyLogDirectory '26072812.log'
 $performanceLogPath = Join-Path (
     [System.IO.Path]::GetTempPath()) "ListopadPP-perf-$runId.csv"
+$pffProfilePath = Join-Path (
+    [System.IO.Path]::GetTempPath()) "ListopadPP-profile-$runId.pff"
 $searchScreenshot = Join-Path $resolvedArtifacts 'search-panel.png'
 $formatScreenshot = Join-Path $resolvedArtifacts 'formatted-map.png'
 $technologyLogScreenshot =
     Join-Path $resolvedArtifacts 'technology-log-raw.png'
 $performanceLogScreenshot =
     Join-Path $resolvedArtifacts 'performance-log-samples.png'
+$pffProfileScreenshot =
+    Join-Path $resolvedArtifacts 'pff-profile.png'
 $process = $null
 $processHandle = [IntPtr]::Zero
 $mainWindow = [IntPtr]::Zero
@@ -634,6 +639,20 @@ try {
   [System.IO.File]::WriteAllText(
       $performanceLogPath, $performanceLogText,
       [System.Text.UTF8Encoding]::new($false))
+  $pffProfileText =
+      "{5,2,id,`r`n{0,0,id,`r`n" +
+      "{{`"`",0},id,id,0,id,0," +
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAA=,`"`"}," +
+      "`"ОбщийМодуль.Тест.Модуль`",42," +
+      "`"Результат = Функция(`"`"тест`"`");`",3," +
+      "1.25,0.75,12.5,7.5,1,0,1,id,`r`n" +
+      "{{`"`",0},id,id,0,id,0," +
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAA=,`"Ext`"}," +
+      "`"Документ.Заказ.МодульОбъекта`",7,`"Возврат;`",1," +
+      "0.1,0.05,0.5,0.25,0,1,0,id,"
+  [System.IO.File]::WriteAllText(
+      $pffProfilePath, $pffProfileText,
+      [System.Text.UTF8Encoding]::new($true))
 
   $env:LISTOPAD_INSTANCE_ID = "gui-smoke-$runId"
   $env:LISTOPAD_PROFILE_DIR = $profileDirectory
@@ -862,6 +881,50 @@ try {
       'technology log raw-toggle state was not preserved'
   Assert-Smoke ([ListopadSmokeNative]::IsWindowVisible($restoredRawRecord)) `
       'technology log raw panel state was not preserved'
+  Send-Command $mainWindow $IDM_FILE_CLOSE
+
+  $pffProfileOpener = Start-Process -FilePath $resolvedExecutable `
+      -ArgumentList @('--', $pffProfilePath) -PassThru
+  Assert-Smoke ($pffProfileOpener.WaitForExit(5000)) `
+      'PFF profile request was not delivered to the running instance'
+  $pffProfileView = [IntPtr]::Zero
+  foreach ($attempt in 1..100) {
+    $candidate = [ListopadSmokeNative]::GetDlgItem(
+        $mainWindow, $IDC_EDITOR)
+    if ($candidate -ne [IntPtr]::Zero -and
+        [ListopadSmokeNative]::IsWindowVisible($candidate) -and
+        (Get-ControlClass $candidate) -eq 'ListopadPPPffProfile') {
+      $pffProfileView = $candidate
+      break
+    }
+    Start-Sleep -Milliseconds 100
+  }
+  Assert-Smoke ($pffProfileView -ne [IntPtr]::Zero) `
+      'PFF profile did not open in its structured view'
+  $pffRecords = Get-Control $pffProfileView 3 'PFF profile record list'
+  $pffRecordCount = 0
+  foreach ($attempt in 1..100) {
+    $pffRecordCount =
+        [int][ListopadSmokeNative]::SendMessage(
+            $pffRecords, $LVM_GETITEMCOUNT,
+            [IntPtr]::Zero, [IntPtr]::Zero)
+    if ($pffRecordCount -eq 2) { break }
+    Start-Sleep -Milliseconds 100
+  }
+  Assert-Smoke ($pffRecordCount -eq 2) `
+      "PFF profile indexed $pffRecordCount records instead of 2"
+  Save-WindowScreenshot $mainWindow $pffProfileScreenshot
+  Send-Command $mainWindow $IDM_VIEW_PFF_PROFILE
+  $pffTextView = Assert-VisibleControl $mainWindow $IDC_EDITOR `
+      'PFF profile text view'
+  Assert-Smoke ((Get-ControlClass $pffTextView) -eq 'Scintilla') `
+      'PFF profile did not switch back to source text'
+  Send-Command $mainWindow $IDM_VIEW_PFF_PROFILE
+  $pffStructuredAgain = Assert-VisibleControl `
+      $mainWindow $IDC_EDITOR 'restored PFF profile view'
+  Assert-Smoke (
+      (Get-ControlClass $pffStructuredAgain) -eq 'ListopadPPPffProfile') `
+      'source text did not switch back to the PFF profile view'
   Send-Command $mainWindow $IDM_FILE_CLOSE
 
   $performanceLogOpener = Start-Process -FilePath $resolvedExecutable `
@@ -1101,6 +1164,8 @@ try {
     performanceLogCounters = $performanceCounterCount
     performanceLogSamples = $performanceSampleCount
     performanceLogScreenshot = $performanceLogScreenshot
+    pffProfileRecords = $pffRecordCount
+    pffProfileScreenshot = $pffProfileScreenshot
     searchScreenshot = $searchScreenshot
     formatScreenshot = $formatScreenshot
     status = 'passed'
@@ -1123,6 +1188,8 @@ try {
   Remove-Item -LiteralPath $technologyLogDirectory -Recurse -Force `
       -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $performanceLogPath -Force `
+      -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $pffProfilePath -Force `
       -ErrorAction SilentlyContinue
   if ($KeepProfile) {
     Write-Warning "GUI smoke profile preserved at $profileDirectory"
