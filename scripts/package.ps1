@@ -121,6 +121,7 @@ New-Item -ItemType Directory -Force -Path $licenseDirectory | Out-Null
 $licenseSources = @{
   'PCRE2.txt' = 'pcre2'; 'pugixml.txt' = 'pugixml'; 'QuickJS-NG.txt' = 'quickjs-ng'
   'tidy-html5.txt' = 'tidy-html5'; 'uchardet.txt' = 'uchardet'; 'yyjson.txt' = 'yyjson'
+  'Zstandard.txt' = 'zstd'
 }
 foreach ($entry in $licenseSources.GetEnumerator()) {
   Copy-Item (Join-Path $build "vcpkg_installed\x64-windows-static\share\$($entry.Value)\copyright") `

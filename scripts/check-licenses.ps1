@@ -12,6 +12,7 @@ $required = @(
   'vcpkg_installed\x64-windows-static\share\tidy-html5\copyright',
   'vcpkg_installed\x64-windows-static\share\uchardet\copyright',
   'vcpkg_installed\x64-windows-static\share\yyjson\copyright',
+  'vcpkg_installed\x64-windows-static\share\zstd\copyright',
   '_deps\scintilla_upstream-src\License.txt',
   '_deps\lexilla_upstream-src\License.txt'
 )

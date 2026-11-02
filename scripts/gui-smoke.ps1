@@ -181,6 +181,7 @@ $IDM_VIEW_HEX = 1403
 $IDM_VIEW_TECHNOLOGY_LOG = 1404
 $IDM_VIEW_PERFORMANCE_LOG = 1405
 $IDM_VIEW_PFF_PROFILE = 1406
+$IDM_VIEW_LINUX_CORE = 1407
 $IDM_HELP_ABOUT = 1501
 $IDC_EDITOR = 2002
 $IDC_TAB = 2001
@@ -549,6 +550,83 @@ function Assert-DarkMenuRemainder([IntPtr]$Window, [string]$Screenshot) {
   }
 }
 
+function Set-LittleEndian(
+    [byte[]]$Bytes, [int]$Offset, [object]$Value) {
+  $encoded = if ($Value -is [uint16]) {
+    [BitConverter]::GetBytes([uint16]$Value)
+  } elseif ($Value -is [uint32]) {
+    [BitConverter]::GetBytes([uint32]$Value)
+  } elseif ($Value -is [uint64]) {
+    [BitConverter]::GetBytes([uint64]$Value)
+  } else {
+    throw "Unsupported ELF fixture integer type: $($Value.GetType())"
+  }
+  [Array]::Copy($encoded, 0, $Bytes, $Offset, $encoded.Length)
+}
+
+function Add-ElfNote(
+    [System.IO.BinaryWriter]$Writer, [uint32]$Type,
+    [byte[]]$Description) {
+  $Writer.Write([uint32]5)
+  $Writer.Write([uint32]$Description.Length)
+  $Writer.Write($Type)
+  $Writer.Write([byte[]](0x43, 0x4f, 0x52, 0x45, 0))
+  while (($Writer.BaseStream.Position % 4) -ne 0) { $Writer.Write([byte]0) }
+  $Writer.Write($Description)
+  while (($Writer.BaseStream.Position % 4) -ne 0) { $Writer.Write([byte]0) }
+}
+
+function Write-LinuxCoreFixture([string]$Path) {
+  $notesStream = [System.IO.MemoryStream]::new()
+  $notes = [System.IO.BinaryWriter]::new($notesStream)
+  try {
+    $status = [byte[]]::new(16)
+    $status[12] = 11
+    Add-ElfNote $notes ([uint32]1) $status
+
+    $filesStream = [System.IO.MemoryStream]::new()
+    $files = [System.IO.BinaryWriter]::new($filesStream)
+    try {
+      $files.Write([uint64]1)
+      $files.Write([uint64]4096)
+      $files.Write([uint64]0x400000)
+      $files.Write([uint64]0x410000)
+      $files.Write([uint64]1)
+      $files.Write([System.Text.Encoding]::UTF8.GetBytes('/opt/smoke/app'))
+      $files.Write([byte]0)
+      Add-ElfNote $notes ([uint32]0x46494c45) $filesStream.ToArray()
+    } finally {
+      $files.Dispose()
+      $filesStream.Dispose()
+    }
+    $noteBytes = $notesStream.ToArray()
+  } finally {
+    $notes.Dispose()
+    $notesStream.Dispose()
+  }
+
+  $noteOffset = 120
+  $elf = [byte[]]::new($noteOffset + $noteBytes.Length)
+  $elf[0] = 0x7f
+  $elf[1] = 0x45
+  $elf[2] = 0x4c
+  $elf[3] = 0x46
+  $elf[4] = 2
+  $elf[5] = 1
+  $elf[6] = 1
+  Set-LittleEndian $elf 16 ([uint16]4)
+  Set-LittleEndian $elf 18 ([uint16]62)
+  Set-LittleEndian $elf 32 ([uint64]64)
+  Set-LittleEndian $elf 52 ([uint16]64)
+  Set-LittleEndian $elf 54 ([uint16]56)
+  Set-LittleEndian $elf 56 ([uint16]1)
+  Set-LittleEndian $elf 64 ([uint32]4)
+  Set-LittleEndian $elf 72 ([uint64]$noteOffset)
+  Set-LittleEndian $elf 96 ([uint64]$noteBytes.Length)
+  [Array]::Copy($noteBytes, 0, $elf, $noteOffset, $noteBytes.Length)
+  [System.IO.File]::WriteAllBytes($Path, $elf)
+}
+
 $resolvedExecutable = (Resolve-Path -LiteralPath $Executable).Path
 $expectedVersion = (Get-Item -LiteralPath $resolvedExecutable).VersionInfo.ProductVersion
 Assert-Smoke (-not [string]::IsNullOrWhiteSpace($expectedVersion)) `
@@ -565,6 +643,8 @@ $performanceLogPath = Join-Path (
     [System.IO.Path]::GetTempPath()) "ListopadPP-perf-$runId.csv"
 $pffProfilePath = Join-Path (
     [System.IO.Path]::GetTempPath()) "ListopadPP-profile-$runId.pff"
+$linuxCorePath = Join-Path (
+    [System.IO.Path]::GetTempPath()) "core.smoke.1000.boot.42.1"
 $searchScreenshot = Join-Path $resolvedArtifacts 'search-panel.png'
 $formatScreenshot = Join-Path $resolvedArtifacts 'formatted-map.png'
 $technologyLogScreenshot =
@@ -573,6 +653,8 @@ $performanceLogScreenshot =
     Join-Path $resolvedArtifacts 'performance-log-samples.png'
 $pffProfileScreenshot =
     Join-Path $resolvedArtifacts 'pff-profile.png'
+$linuxCoreScreenshot =
+    Join-Path $resolvedArtifacts 'linux-core.png'
 $process = $null
 $processHandle = [IntPtr]::Zero
 $mainWindow = [IntPtr]::Zero
@@ -653,6 +735,7 @@ try {
   [System.IO.File]::WriteAllText(
       $pffProfilePath, $pffProfileText,
       [System.Text.UTF8Encoding]::new($true))
+  Write-LinuxCoreFixture $linuxCorePath
 
   $env:LISTOPAD_INSTANCE_ID = "gui-smoke-$runId"
   $env:LISTOPAD_PROFILE_DIR = $profileDirectory
@@ -927,6 +1010,58 @@ try {
       'source text did not switch back to the PFF profile view'
   Send-Command $mainWindow $IDM_FILE_CLOSE
 
+  $linuxCoreOpener = Start-Process -FilePath $resolvedExecutable `
+      -ArgumentList @('--', $linuxCorePath) -PassThru
+  Assert-Smoke ($linuxCoreOpener.WaitForExit(5000)) `
+      'Linux core request was not delivered to the running instance'
+  $linuxCoreView = [IntPtr]::Zero
+  foreach ($attempt in 1..100) {
+    $candidate = [ListopadSmokeNative]::GetDlgItem(
+        $mainWindow, $IDC_EDITOR)
+    if ($candidate -ne [IntPtr]::Zero -and
+        [ListopadSmokeNative]::IsWindowVisible($candidate) -and
+        (Get-ControlClass $candidate) -eq 'ListopadPPLinuxCore') {
+      $linuxCoreView = $candidate
+      break
+    }
+    Start-Sleep -Milliseconds 100
+  }
+  Assert-Smoke ($linuxCoreView -ne [IntPtr]::Zero) `
+      'Linux core did not open in its structured view'
+  $linuxCoreSummary = Get-Control $linuxCoreView 1 `
+      'Linux core summary'
+  $linuxCoreMappings = Get-Control $linuxCoreView 2 `
+      'Linux core mapping list'
+  $linuxCoreMappingCount = 0
+  foreach ($attempt in 1..100) {
+    $linuxCoreMappingCount =
+        [int][ListopadSmokeNative]::SendMessage(
+            $linuxCoreMappings, $LVM_GETITEMCOUNT,
+            [IntPtr]::Zero, [IntPtr]::Zero)
+    if ($linuxCoreMappingCount -eq 1) { break }
+    Start-Sleep -Milliseconds 100
+  }
+  Assert-Smoke ($linuxCoreMappingCount -eq 1) `
+      "Linux core listed $linuxCoreMappingCount mappings instead of 1"
+  $linuxCoreSummaryText = Get-ControlText $linuxCoreSummary
+  Assert-Smoke ($linuxCoreSummaryText -match 'SIGSEGV') `
+      "Linux core summary does not contain SIGSEGV: '$linuxCoreSummaryText'"
+  Save-WindowScreenshot $mainWindow $linuxCoreScreenshot
+  Send-Command $mainWindow $IDM_VIEW_LINUX_CORE
+  $linuxCoreHexView = Assert-VisibleControl $mainWindow $IDC_EDITOR `
+      'Linux core hex view'
+  Assert-Smoke (
+      (Get-ControlClass $linuxCoreHexView) -eq 'ListopadPPHexView') `
+      'Linux core did not switch to the hex view'
+  Send-Command $mainWindow $IDM_VIEW_LINUX_CORE
+  $linuxCoreStructuredAgain = Assert-VisibleControl `
+      $mainWindow $IDC_EDITOR 'restored Linux core view'
+  Assert-Smoke (
+      (Get-ControlClass $linuxCoreStructuredAgain) -eq
+          'ListopadPPLinuxCore') `
+      'hex view did not switch back to the Linux core view'
+  Send-Command $mainWindow $IDM_FILE_CLOSE
+
   $performanceLogOpener = Start-Process -FilePath $resolvedExecutable `
       -ArgumentList @('--', $performanceLogPath) -PassThru
   Assert-Smoke ($performanceLogOpener.WaitForExit(5000)) `
@@ -1166,6 +1301,8 @@ try {
     performanceLogScreenshot = $performanceLogScreenshot
     pffProfileRecords = $pffRecordCount
     pffProfileScreenshot = $pffProfileScreenshot
+    linuxCoreMappings = $linuxCoreMappingCount
+    linuxCoreScreenshot = $linuxCoreScreenshot
     searchScreenshot = $searchScreenshot
     formatScreenshot = $formatScreenshot
     status = 'passed'
@@ -1190,6 +1327,8 @@ try {
   Remove-Item -LiteralPath $performanceLogPath -Force `
       -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $pffProfilePath -Force `
+      -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $linuxCorePath -Force `
       -ErrorAction SilentlyContinue
   if ($KeepProfile) {
     Write-Warning "GUI smoke profile preserved at $profileDirectory"
