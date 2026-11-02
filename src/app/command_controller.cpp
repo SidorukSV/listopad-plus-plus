@@ -1,6 +1,7 @@
 #include "command_controller.h"
 
 #include "editor_window.h"
+#include "linux_core_view.h"
 #include "pff_profile_view.h"
 #include "performance_log_view.h"
 #include "resource.h"
@@ -94,6 +95,9 @@ bool CommandController::dispatch(EditorWindow& owner, const int command) const {
       } else if (tab && tab->view_kind ==
                             EditorWindow::ViewKind::PffProfile) {
         PffProfileView::copy(tab->view);
+      } else if (tab && tab->view_kind ==
+                            EditorWindow::ViewKind::LinuxCore) {
+        LinuxCoreView::copy(tab->view);
       } else if (tab && owner.editable(*tab)) {
         sci(tab->view, SCI_COPY);
       }
@@ -111,6 +115,9 @@ bool CommandController::dispatch(EditorWindow& owner, const int command) const {
       } else if (tab && tab->view_kind ==
                             EditorWindow::ViewKind::PffProfile) {
         PffProfileView::select_all(tab->view);
+      } else if (tab && tab->view_kind ==
+                            EditorWindow::ViewKind::LinuxCore) {
+        LinuxCoreView::select_all(tab->view);
       } else if (tab && owner.editable(*tab)) {
         sci(tab->view, SCI_SELECTALL);
       }
@@ -228,6 +235,26 @@ bool CommandController::dispatch(EditorWindow& owner, const int command) const {
             *tab, tab->view_kind == EditorWindow::ViewKind::PffProfile
                       ? EditorWindow::ViewKind::Text
                       : EditorWindow::ViewKind::PffProfile);
+      }
+      return true;
+    case IDM_VIEW_LINUX_CORE:
+      if (!tab || !tab->document.has_path() || tab->document.dirty ||
+          tab->document.external_diverged || !tab->linux_core_candidate) {
+        MessageBeep(MB_ICONINFORMATION);
+        MessageBoxW(
+            owner.window_,
+            owner.tr(
+                L"Представление дампа Linux доступно только для "
+                L"распознанного ELF core dump без локальных или внешних "
+                L"изменений.",
+                L"The Linux core view is available only for a recognized "
+                L"ELF core dump without local or external changes."),
+            LISTOPAD_PRODUCT_NAME, MB_OK | MB_ICONINFORMATION);
+      } else {
+        owner.switch_tab_view(
+            *tab, tab->view_kind == EditorWindow::ViewKind::LinuxCore
+                      ? EditorWindow::ViewKind::Hex
+                      : EditorWindow::ViewKind::LinuxCore);
       }
       return true;
     case IDM_TOOLS_FORMAT:

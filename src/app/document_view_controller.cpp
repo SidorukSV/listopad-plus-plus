@@ -4,6 +4,7 @@
 #include "editor_window.h"
 #include "hex_view_window.h"
 #include "large_file_view.h"
+#include "linux_core_view.h"
 #include "pff_profile_view.h"
 #include "performance_log_view.h"
 #include "resource.h"
@@ -33,6 +34,9 @@ void DocumentViewController::destroy(EditorWindow&, DocumentSession& session) co
   }
   if (session.view && session.view_kind == DocumentViewKind::PffProfile) {
     session.pff_profile_ui = PffProfileView::ui_state(session.view);
+  }
+  if (session.view && session.view_kind == DocumentViewKind::LinuxCore) {
+    session.linux_core_ui = LinuxCoreView::ui_state(session.view);
   }
   if (session.map) {
     DestroyWindow(session.map);
@@ -133,6 +137,18 @@ bool DocumentViewController::create(EditorWindow& owner,
         return false;
       }
       return true;
+    case DocumentViewKind::LinuxCore:
+      session.view = LinuxCoreView::create(
+          owner.window_, IDC_EDITOR, owner.russian(), session.linux_core_ui);
+      if (!session.view) return false;
+      SendMessageW(session.view, WM_SETFONT,
+                   reinterpret_cast<WPARAM>(owner.editor_font_), TRUE);
+      LinuxCoreView::set_dark(session.view, owner.dark_);
+      if (!LinuxCoreView::open(session.view, session.document.path)) {
+        destroy(owner, session);
+        return false;
+      }
+      return true;
   }
   return false;
 }
@@ -151,6 +167,7 @@ bool DocumentViewController::switch_to(
       (session.view_kind == DocumentViewKind::TechnologyLog ||
        session.view_kind == DocumentViewKind::PerformanceLog ||
        session.view_kind == DocumentViewKind::PffProfile ||
+       session.view_kind == DocumentViewKind::LinuxCore ||
        (session.view_kind == DocumentViewKind::Hex &&
         !session.has_preserved_text_surface()))) {
     const Encoding* forced =
@@ -256,6 +273,9 @@ bool DocumentViewController::switch_to(
   if (previous_kind == DocumentViewKind::PffProfile && previous_view) {
     session.pff_profile_ui = PffProfileView::ui_state(previous_view);
   }
+  if (previous_kind == DocumentViewKind::LinuxCore && previous_view) {
+    session.linux_core_ui = LinuxCoreView::ui_state(previous_view);
+  }
   std::optional<Document> previous_document;
   if (replacement) {
     previous_document = std::move(session.document);
@@ -283,6 +303,7 @@ bool DocumentViewController::switch_to(
   if (target == DocumentViewKind::TechnologyLog ||
       target == DocumentViewKind::PerformanceLog ||
       target == DocumentViewKind::PffProfile ||
+      target == DocumentViewKind::LinuxCore ||
       target == DocumentViewKind::Hex) {
     session.document.text.clear();
   }

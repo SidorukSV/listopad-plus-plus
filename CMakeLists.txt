@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.29)
-set(LISTOPAD_VERSION "0.3.3" CACHE STRING "Listopad++ semantic version")
+set(LISTOPAD_VERSION "0.4.0" CACHE STRING "Listopad++ semantic version")
 project(ListopadPP VERSION "${LISTOPAD_VERSION}" LANGUAGES C CXX RC)
 
 # Listopad++ does not use C++ modules. With MSVC/Ninja, the module-scanned
@@ -53,6 +53,7 @@ find_package(qjs CONFIG REQUIRED)
 find_package(unofficial-tidy-html5 CONFIG REQUIRED)
 find_package(uchardet CONFIG REQUIRED)
 find_package(yyjson CONFIG REQUIRED)
+find_package(zstd CONFIG REQUIRED)
 
 include(cmake/Scintilla.cmake)
 listopad_enable_address_sanitizer(listopad_scintilla)
@@ -98,6 +99,7 @@ add_library(listopad_core STATIC
   src/core/hex_view.cpp
   src/core/ipc_protocol.cpp
   src/core/language.cpp
+  src/core/linux_core_dump.cpp
   src/core/pff_profile.cpp
   src/core/performance_log.cpp
   src/core/performance_log_binary.cpp
@@ -120,6 +122,7 @@ target_link_libraries(listopad_core PUBLIC
   unofficial::tidy-html5::tidy
   uchardet::libuchardet
   yyjson::yyjson
+  zstd::libzstd
   advapi32 bcrypt crypt32 pdh shell32 shlwapi wintrust)
 listopad_enable_address_sanitizer(listopad_core)
 
@@ -133,6 +136,8 @@ add_executable(ListopadPP WIN32
   src/app/file_watcher.cpp
   src/app/hex_view_window.cpp
   src/app/large_file_view.cpp
+  src/app/linux_core_controller.cpp
+  src/app/linux_core_view.cpp
   src/app/pff_profile_controller.cpp
   src/app/pff_profile_view.cpp
   src/app/performance_log_controller.cpp
@@ -193,6 +198,7 @@ if(LISTOPAD_BUILD_TESTS)
     tests/ipc_tests.cpp
     tests/language_tests.cpp
     tests/lexer_tests.cpp
+    tests/linux_core_dump_tests.cpp
     tests/pff_profile_tests.cpp
     tests/performance_log_tests.cpp
     tests/recovery_controller_tests.cpp

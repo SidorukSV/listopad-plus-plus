@@ -3,6 +3,7 @@
 #include "document_map.h"
 #include "hex_view_window.h"
 #include "large_file_view.h"
+#include "linux_core_view.h"
 #include "pff_profile_view.h"
 #include "performance_log_view.h"
 #include "recovery_dialog.h"
@@ -313,6 +314,7 @@ bool EditorWindow::create(const int show_command) {
   TechnologyLogView::register_class(instance_);
   PerformanceLogView::register_class(instance_);
   PffProfileView::register_class(instance_);
+  LinuxCoreView::register_class(instance_);
 
   WNDCLASSEXW type{sizeof(type)};
   type.hInstance = instance_; type.lpfnWndProc = window_proc; type.lpszClassName = kWindowClass;
@@ -1019,6 +1021,9 @@ void EditorWindow::apply_window_theme() {
       case ViewKind::PffProfile:
         PffProfileView::set_dark(tab.view, dark_);
         break;
+      case ViewKind::LinuxCore:
+        LinuxCoreView::set_dark(tab.view, dark_);
+        break;
       case ViewKind::Text:
         configure_editor(tab);
         if (tab.map)
@@ -1176,6 +1181,8 @@ void EditorWindow::rebuild_menu() {
               tr(L"Системный монитор", L"Performance log"));
   AppendMenuW(view, MF_STRING, IDM_VIEW_PFF_PROFILE,
               tr(L"Замер производительности 1С", L"1C performance profile"));
+  AppendMenuW(view, MF_STRING, IDM_VIEW_LINUX_CORE,
+              tr(L"Дамп Linux", L"Linux core dump"));
   AppendMenuW(view, MF_STRING, IDM_VIEW_HEX, L"Hex/ASCII");
   AppendMenuW(root, MF_POPUP, reinterpret_cast<UINT_PTR>(view),
               tr(L"&Вид", L"&View"));
@@ -1230,6 +1237,8 @@ void EditorWindow::refresh_view_menu_state() {
               tab && tab->view_kind == ViewKind::PerformanceLog);
   set_checked(IDM_VIEW_PFF_PROFILE,
               tab && tab->view_kind == ViewKind::PffProfile);
+  set_checked(IDM_VIEW_LINUX_CORE,
+              tab && tab->view_kind == ViewKind::LinuxCore);
   const bool can_switch =
       tab && tab->document.has_path() && !tab->document.dirty &&
       !tab->document.external_diverged;
@@ -1240,6 +1249,8 @@ void EditorWindow::refresh_view_menu_state() {
               can_switch && tab->performance_log_candidate);
   set_enabled(IDM_VIEW_PFF_PROFILE,
               can_switch && tab->pff_profile_candidate);
+  set_enabled(IDM_VIEW_LINUX_CORE,
+              can_switch && tab->linux_core_candidate);
   if (changed) DrawMenuBar(window_);
 }
 
@@ -2483,15 +2494,16 @@ bool EditorWindow::open_file(const std::filesystem::path& input, const Encoding*
     MessageBoxW(window_, (tr(L"Не удалось открыть файл:\n", L"Unable to open file:\n") + win32_error_message(loaded.error)).c_str(),
                 LISTOPAD_PRODUCT_NAME, MB_ICONERROR); return false;
   }
-  // A binary performance log is recognized before the binary prompt: PDH is
-  // the only reader that can tell whether the file really is one, so the
-  // extension opens the structured view and the worker reports the verdict.
+  // Structured binary formats are recognized before the generic binary
+  // prompt. Their dedicated workers validate the full input asynchronously.
+  const bool linux_core_candidate = LinuxCoreView::looks_like(path);
   const bool performance_log_candidate =
-      looks_like_performance_log_name(path) ||
+      !linux_core_candidate &&
+      (looks_like_performance_log_name(path) ||
       (!loaded.document.likely_binary &&
        (loaded.document.large_file
             ? PerformanceLogView::looks_like(path)
-            : looks_like_performance_log_text(loaded.document.text)));
+            : looks_like_performance_log_text(loaded.document.text))));
   const bool pff_profile_candidate =
       !performance_log_candidate && !loaded.document.likely_binary &&
       (loaded.document.large_file
@@ -2504,13 +2516,15 @@ bool EditorWindow::open_file(const std::filesystem::path& input, const Encoding*
            ? TechnologyLogView::looks_like(path)
            : looks_like_technology_log(loaded.document.text));
   ViewKind view_kind =
-      performance_log_candidate  ? ViewKind::PerformanceLog
+      linux_core_candidate       ? ViewKind::LinuxCore
+      : performance_log_candidate  ? ViewKind::PerformanceLog
       : pff_profile_candidate    ? ViewKind::PffProfile
       : technology_log_candidate ? ViewKind::TechnologyLog
       : loaded.document.large_file
           ? ViewKind::LargeText
           : ViewKind::Text;
-  if (loaded.document.likely_binary && !performance_log_candidate) {
+  if (loaded.document.likely_binary && !performance_log_candidate &&
+      !linux_core_candidate) {
     const int answer = MessageBoxW(
         window_,
         tr(L"Файл похож на бинарный.\n"
@@ -2536,6 +2550,7 @@ bool EditorWindow::open_file(const std::filesystem::path& input, const Encoding*
   tab.technology_log_candidate = technology_log_candidate;
   tab.performance_log_candidate = performance_log_candidate;
   tab.pff_profile_candidate = pff_profile_candidate;
+  tab.linux_core_candidate = linux_core_candidate;
   tab_controller_.push_back(std::move(tab));
   Tab& added = tab_controller_.back();
   if (!create_tab_views(added)) {
@@ -2550,7 +2565,8 @@ bool EditorWindow::open_file(const std::filesystem::path& input, const Encoding*
   if (added.view_kind == ViewKind::Hex ||
       added.view_kind == ViewKind::TechnologyLog ||
       added.view_kind == ViewKind::PerformanceLog ||
-      added.view_kind == ViewKind::PffProfile) {
+      added.view_kind == ViewKind::PffProfile ||
+      added.view_kind == ViewKind::LinuxCore) {
     added.document.text.clear();
   }
   TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = tab_controller_.back().document.title.data();
@@ -2794,6 +2810,10 @@ void EditorWindow::reload_active() {
       if (!PffProfileView::open(tab->view, tab->document.path)) return;
       tab->document.fingerprint = fingerprint_file(tab->document.path);
       break;
+    case ViewKind::LinuxCore:
+      if (!LinuxCoreView::open(tab->view, tab->document.path)) return;
+      tab->document.fingerprint = fingerprint_file(tab->document.path);
+      break;
     case ViewKind::Text: {
       auto loaded = load_document(tab->document.path,
                                   settings_.large_file_threshold,
@@ -2852,7 +2872,8 @@ void EditorWindow::apply_search_visibility() {
   const bool structured_read_only =
       tab && (tab->view_kind == ViewKind::TechnologyLog ||
               tab->view_kind == ViewKind::PerformanceLog ||
-              tab->view_kind == ViewKind::PffProfile);
+              tab->view_kind == ViewKind::PffProfile ||
+              tab->view_kind == ViewKind::LinuxCore);
   if (ui_state.search_mode == SearchMode::Replace && !editable_tab) {
     ui_state.search_mode = SearchMode::Find;
   }
@@ -2907,6 +2928,9 @@ void EditorWindow::find_next() {
       return;
     case ViewKind::PffProfile:
       PffProfileView::find_next(tab->view, pattern, options, wrap);
+      return;
+    case ViewKind::LinuxCore:
+      LinuxCoreView::find_next(tab->view, pattern, options, wrap);
       return;
     case ViewKind::Text:
       break;
@@ -3611,6 +3635,19 @@ void EditorWindow::update_ui() {
       SendMessageW(status_, SB_SETTEXTW, 2, pointer_param(L"—"));
       SendMessageW(status_, SB_SETTEXTW, 3, pointer_param(L"PFF"));
       break;
+    case ViewKind::LinuxCore: {
+      SendMessageW(
+          status_, SB_SETTEXTW, 0,
+          pointer_param(tr(L"Дамп Linux · только чтение",
+                           L"Linux core dump · read-only")));
+      const std::wstring size =
+          std::to_wstring(tab->document.fingerprint.size) +
+          tr(L" байт", L" bytes");
+      SendMessageW(status_, SB_SETTEXTW, 1, pointer_param(size.c_str()));
+      SendMessageW(status_, SB_SETTEXTW, 2, pointer_param(L"—"));
+      SendMessageW(status_, SB_SETTEXTW, 3, pointer_param(L"ELF core"));
+      break;
+    }
     case ViewKind::Text: {
       update_position_status(*tab);
       SendMessageW(status_, SB_SETTEXTW, 1, pointer_param(encoding.c_str()));
